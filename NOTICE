@@ -1,0 +1,14 @@
+Vyges Layout Geometry Kernel (vyges-layout)
+Copyright 2026 Vyges. All Rights Reserved.
+
+This product is authored by Vyges (https://vyges.com) and licensed under the
+Apache License, Version 2.0 (the "License"). You may obtain a copy of the
+License in the accompanying LICENSE file or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+vyges-layout is a memory-safe Rust layout-geometry kernel: GDSII read/write,
+polygon boolean operations, and hierarchy flattening. It is the substrate under
+layout-side tooling (LVS device extraction, DRC, metal fill) and the chip viewer.
+
+This is a clean-room implementation; no third-party EDA database is included.

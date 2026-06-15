@@ -1,0 +1,19 @@
+[package]
+name = "vyges-layout"
+version = "0.0.1"
+edition = "2021"
+description = "Layout geometry kernel: GDSII read/write, polygon boolean ops, and hierarchy flatten."
+license = "Apache-2.0"
+authors = ["Vyges <https://vyges.com/contact>"]
+homepage = "https://vyges.com"
+repository = "https://github.com/vyges-tools/layout"
+
+# std-only (no external dependencies) so the core builds/tests offline.
+
+[[bin]]
+name = "vyges-layout"
+path = "src/main.rs"
+
+[lib]
+name = "vyges_layout"
+path = "src/lib.rs"
