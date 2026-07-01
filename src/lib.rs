@@ -21,8 +21,9 @@
 
 pub mod gds;
 pub mod oasis;
-pub mod geom;
-pub mod index;
+// `geom` and `index` live in the shared `vyges-geom` crate; re-export them so the
+// layout-side engines keep using `vyges_layout::geom` / `::index` unchanged.
+pub use vyges_geom::{geom, index};
 pub mod boolean;
 pub mod flatten;
 pub mod engine;

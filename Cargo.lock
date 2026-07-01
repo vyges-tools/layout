@@ -3,5 +3,13 @@
 version = 4
 
 [[package]]
+name = "vyges-geom"
+version = "0.0.1"
+source = "git+https://github.com/vyges-tools/geom?branch=main#89aa6c967ff0c69fed4a4fde124714612c67ef1f"
+
+[[package]]
 name = "vyges-layout"
 version = "0.0.1"
+dependencies = [
+ "vyges-geom",
+]
