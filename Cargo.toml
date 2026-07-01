@@ -12,6 +12,9 @@ repository = "https://github.com/vyges-tools/layout"
 # cross-repo deps in the suite, so any consumer building vyges-layout resolves it.
 [dependencies]
 vyges-geom = { git = "https://github.com/vyges-tools/geom", branch = "main" }
+# Pure-Rust DEFLATE (no C, permissive) for OASIS CBLOCK decompression — the default
+# compressed form real writers emit. Keeps the "no C toolchain, cross-platform" story.
+miniz_oxide = "0.8"
 
 [[bin]]
 name = "vyges-layout"

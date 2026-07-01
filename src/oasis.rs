@@ -33,7 +33,23 @@ const R_CELLNAME_IMPLICIT: u64 = 3;
 const R_CELLNAME_EXPLICIT: u64 = 4;
 const R_TEXTSTRING_IMPLICIT: u64 = 5;
 const R_TEXTSTRING_EXPLICIT: u64 = 6;
+const R_PROPNAME_IMPLICIT: u64 = 7;
+const R_PROPNAME_EXPLICIT: u64 = 8;
+const R_PROPSTRING_IMPLICIT: u64 = 9;
+const R_PROPSTRING_EXPLICIT: u64 = 10;
+const R_LAYERNAME_DATA: u64 = 11;
+const R_LAYERNAME_TEXT: u64 = 12;
 const R_TEXT: u64 = 19;
+const R_TRAPEZOID_AB: u64 = 23;
+const R_TRAPEZOID_A: u64 = 24;
+const R_TRAPEZOID_B: u64 = 25;
+const R_CTRAPEZOID: u64 = 26;
+const R_CIRCLE: u64 = 27;
+const R_PROPERTY: u64 = 28;
+const R_PROPERTY_REPEAT: u64 = 29;
+const R_XNAME_IMPLICIT: u64 = 30;
+const R_XNAME_EXPLICIT: u64 = 31;
+const R_CBLOCK: u64 = 34;
 const R_CELL_REF: u64 = 13;
 const R_CELL_NAME: u64 = 14;
 const R_XYABSOLUTE: u64 = 15;
@@ -287,209 +303,310 @@ pub fn parse(b: &[u8]) -> Result<Library, OasisError> {
     if b.len() < MAGIC.len() || &b[..MAGIC.len()] != MAGIC {
         return Err(OasisError("not an OASIS file (bad magic)".into()));
     }
-    let mut i = MAGIC.len();
-    let mut lib = Library::default();
-    let mut cellnames: Vec<String> = Vec::new();
-    let mut textstrings: Vec<String> = Vec::new();
-    let mut cell: Option<Cell> = None;
-    // modal state
-    let mut m_layer: i16 = 0;
-    let mut m_datatype: i16 = 0;
-    let mut m_halfwidth: i64 = 0;
-    let mut m_x: i32 = 0;
-    let mut m_y: i32 = 0;
-    // text has its own modal layer/type/position/string, separate from geometry
-    let mut m_textlayer: i16 = 0;
-    let mut m_texttype: i16 = 0;
-    let mut m_text_x: i32 = 0;
-    let mut m_text_y: i32 = 0;
-    let mut m_textstring = String::new();
-
-    let push_cell = |lib: &mut Library, cell: &mut Option<Cell>| {
-        if let Some(c) = cell.take() {
-            lib.cells.push(c);
-        }
-    };
-
-    while i < b.len() {
-        let id = ru(b, &mut i)?;
-        match id {
-            R_PAD => {}
-            R_START => {
-                let _ver = rstr(b, &mut i)?;
-                let unit = rreal(b, &mut i)?;
-                if unit > 0.0 {
-                    lib.db_unit = 1e-6 / unit;
-                    lib.user_unit = 1.0 / unit;
+    let mut st = ParseState::default();
+    st.process(&b[MAGIC.len()..])?;
+    st.finish_cell();
+    // resolve refnum-referenced cell names from the (possibly end-located) table
+    for (idx, rn) in st.refnums.iter().enumerate() {
+        if let Some(rn) = rn {
+            if let Some(name) = st.cellnames.get(*rn as usize) {
+                if !name.is_empty() {
+                    st.lib.cells[idx].name = name.clone();
                 }
-                let offset_flag = ru(b, &mut i)?;
-                if offset_flag == 0 {
-                    for _ in 0..12 {
-                        ru(b, &mut i)?; // table offsets, unused (records are scanned)
-                    }
-                }
-            }
-            R_END => break,
-            R_CELLNAME_IMPLICIT => cellnames.push(rstr(b, &mut i)?),
-            R_TEXTSTRING_IMPLICIT => textstrings.push(rstr(b, &mut i)?),
-            R_TEXTSTRING_EXPLICIT => {
-                let s = rstr(b, &mut i)?;
-                let rn = ru(b, &mut i)? as usize;
-                if rn >= textstrings.len() {
-                    textstrings.resize(rn + 1, String::new());
-                }
-                textstrings[rn] = s;
-            }
-            R_CELLNAME_EXPLICIT => {
-                let name = rstr(b, &mut i)?;
-                let rn = ru(b, &mut i)? as usize;
-                if rn >= cellnames.len() {
-                    cellnames.resize(rn + 1, String::new());
-                }
-                cellnames[rn] = name;
-            }
-            R_CELL_REF => {
-                push_cell(&mut lib, &mut cell);
-                let rn = ru(b, &mut i)? as usize;
-                let name = cellnames.get(rn).cloned().unwrap_or_else(|| format!("CELL{rn}"));
-                cell = Some(Cell { name, elements: Vec::new() });
-            }
-            R_CELL_NAME => {
-                push_cell(&mut lib, &mut cell);
-                let name = rstr(b, &mut i)?;
-                cell = Some(Cell { name, elements: Vec::new() });
-            }
-            R_XYABSOLUTE | R_XYRELATIVE => { /* only absolute geometry is emitted */ }
-            R_RECTANGLE => {
-                let el = read_rectangle(b, &mut i, &mut m_layer, &mut m_datatype, &mut m_x, &mut m_y)?;
-                if let Some(c) = cell.as_mut() {
-                    c.elements.push(el);
-                }
-            }
-            R_POLYGON => {
-                let el = read_polygon(b, &mut i, &mut m_layer, &mut m_datatype, &mut m_x, &mut m_y)?;
-                if let Some(c) = cell.as_mut() {
-                    c.elements.push(el);
-                }
-            }
-            R_PATH => {
-                let el = read_path(b, &mut i, &mut m_layer, &mut m_datatype, &mut m_halfwidth, &mut m_x, &mut m_y)?;
-                if let Some(c) = cell.as_mut() {
-                    c.elements.push(el);
-                }
-            }
-            R_TEXT => {
-                let el = read_text(
-                    b,
-                    &mut i,
-                    &textstrings,
-                    &mut m_textstring,
-                    &mut m_textlayer,
-                    &mut m_texttype,
-                    &mut m_text_x,
-                    &mut m_text_y,
-                )?;
-                if let Some(c) = cell.as_mut() {
-                    c.elements.push(el);
-                }
-            }
-            R_PLACEMENT | R_PLACEMENT_TRANSFORM => {
-                let el = read_placement(b, &mut i, id, &cellnames, &mut m_x, &mut m_y)?;
-                if let (Some(c), Some(el)) = (cell.as_mut(), el) {
-                    c.elements.push(el);
-                }
-            }
-            other => {
-                let hint = if other == 34 {
-                    " — DEFLATE-compressed blocks; write uncompressed (e.g. gdstk compression_level=0)"
-                } else {
-                    ""
-                };
-                return Err(OasisError(format!(
-                    "unsupported OASIS record {other} ({}) at byte {}{hint}; v0 reads RECTANGLE/POLYGON/PATH/PLACEMENT",
-                    record_name(other),
-                    i - 1
-                )));
             }
         }
     }
-    push_cell(&mut lib, &mut cell);
-    Ok(lib)
+    Ok(st.lib)
 }
 
-fn read_rectangle(
-    b: &[u8],
-    i: &mut usize,
-    m_layer: &mut i16,
-    m_datatype: &mut i16,
-    m_x: &mut i32,
-    m_y: &mut i32,
-) -> Result<Element, OasisError> {
+/// Reader state threaded through the record stream — including any CBLOCK-compressed
+/// sub-streams, which `process` re-enters with the same modal/table state.
+#[derive(Default)]
+struct ParseState {
+    lib: Library,
+    cellnames: Vec<String>,
+    textstrings: Vec<String>,
+    cell: Option<Cell>,
+    // refnum per finished cell, resolved to a name after the whole stream is scanned
+    refnums: Vec<Option<u64>>,
+    cur_refnum: Option<u64>,
+    // geometry modal state
+    m_layer: i16,
+    m_datatype: i16,
+    m_halfwidth: i64,
+    m_geom_w: i64,
+    m_geom_h: i64,
+    m_x: i32,
+    m_y: i32,
+    // text-specific modal state (never perturbs geometry)
+    m_textlayer: i16,
+    m_texttype: i16,
+    m_text_x: i32,
+    m_text_y: i32,
+    m_textstring: String,
+    // last repetition (modal, reused by repetition-type 0)
+    m_repetition: Vec<(i32, i32)>,
+    ended: bool,
+}
+
+impl ParseState {
+    fn finish_cell(&mut self) {
+        if let Some(c) = self.cell.take() {
+            self.lib.cells.push(c);
+            self.refnums.push(self.cur_refnum.take());
+        }
+    }
+
+    fn push_el(&mut self, el: Element) {
+        if let Some(c) = self.cell.as_mut() {
+            c.elements.push(el);
+        }
+    }
+
+    /// Emit `el` once per repetition offset (or once at (0,0) when `reps` is empty).
+    fn push_repeated(&mut self, el: Element, reps: &[(i32, i32)]) {
+        if reps.is_empty() {
+            self.push_el(el);
+        } else {
+            for &(dx, dy) in reps {
+                self.push_el(translate(&el, dx, dy));
+            }
+        }
+    }
+
+    fn process(&mut self, b: &[u8]) -> Result<(), OasisError> {
+        let mut i = 0;
+        while i < b.len() && !self.ended {
+            let id = ru(b, &mut i)?;
+            match id {
+                R_PAD => {}
+                R_START => {
+                    let _ver = rstr(b, &mut i)?;
+                    let unit = rreal(b, &mut i)?;
+                    if unit > 0.0 {
+                        self.lib.db_unit = 1e-6 / unit;
+                        self.lib.user_unit = 1.0 / unit;
+                    }
+                    let offset_flag = ru(b, &mut i)?;
+                    if offset_flag == 0 {
+                        for _ in 0..12 {
+                            ru(b, &mut i)?; // table offsets, unused (records are scanned)
+                        }
+                    }
+                }
+                R_END => self.ended = true,
+                R_CELLNAME_IMPLICIT => self.cellnames.push(rstr(b, &mut i)?),
+                R_TEXTSTRING_IMPLICIT => self.textstrings.push(rstr(b, &mut i)?),
+                R_TEXTSTRING_EXPLICIT => {
+                    let s = rstr(b, &mut i)?;
+                    let rn = ru(b, &mut i)? as usize;
+                    if rn >= self.textstrings.len() {
+                        self.textstrings.resize(rn + 1, String::new());
+                    }
+                    self.textstrings[rn] = s;
+                }
+                R_CELLNAME_EXPLICIT => {
+                    let name = rstr(b, &mut i)?;
+                    let rn = ru(b, &mut i)? as usize;
+                    if rn >= self.cellnames.len() {
+                        self.cellnames.resize(rn + 1, String::new());
+                    }
+                    self.cellnames[rn] = name;
+                }
+                R_PROPNAME_IMPLICIT | R_PROPSTRING_IMPLICIT => {
+                    rstr(b, &mut i)?; // name/string table entry — value not modeled
+                }
+                R_PROPNAME_EXPLICIT | R_PROPSTRING_EXPLICIT | R_XNAME_IMPLICIT | R_XNAME_EXPLICIT => {
+                    skip_name_record(b, &mut i, id)?;
+                }
+                R_LAYERNAME_DATA | R_LAYERNAME_TEXT => {
+                    rstr(b, &mut i)?; // layer name
+                    read_interval(b, &mut i)?; // layer interval
+                    read_interval(b, &mut i)?; // datatype/texttype interval
+                }
+                R_CELL_REF => {
+                    self.finish_cell();
+                    let rn = ru(b, &mut i)?;
+                    let name = self
+                        .cellnames
+                        .get(rn as usize)
+                        .filter(|n| !n.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| format!("CELL{rn}"));
+                    self.cur_refnum = Some(rn);
+                    self.cell = Some(Cell { name, elements: Vec::new() });
+                }
+                R_CELL_NAME => {
+                    self.finish_cell();
+                    let name = rstr(b, &mut i)?;
+                    self.cell = Some(Cell { name, elements: Vec::new() });
+                }
+                R_XYABSOLUTE | R_XYRELATIVE => { /* only absolute geometry is emitted */ }
+                R_RECTANGLE => {
+                    let (el, reps) = read_rectangle(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_POLYGON => {
+                    let (el, reps) = read_polygon(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_PATH => {
+                    let (el, reps) = read_path(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_TRAPEZOID_AB | R_TRAPEZOID_A | R_TRAPEZOID_B => {
+                    let (el, reps) = read_trapezoid(b, &mut i, id, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_CTRAPEZOID => {
+                    let (el, reps) = read_ctrapezoid(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_CIRCLE => {
+                    let (el, reps) = read_circle(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_TEXT => {
+                    let (el, reps) = read_text(b, &mut i, self)?;
+                    self.push_repeated(el, &reps);
+                }
+                R_PLACEMENT | R_PLACEMENT_TRANSFORM => {
+                    let (el, reps) = read_placement(b, &mut i, id, self)?;
+                    if let Some(el) = el {
+                        self.push_repeated(el, &reps);
+                    }
+                }
+                R_PROPERTY | R_PROPERTY_REPEAT => skip_property(b, &mut i, id)?,
+                R_CBLOCK => {
+                    let comp_type = ru(b, &mut i)?;
+                    let _uncomp_len = ru(b, &mut i)?;
+                    let comp_len = ru(b, &mut i)? as usize;
+                    let end = i
+                        .checked_add(comp_len)
+                        .filter(|e| *e <= b.len())
+                        .ok_or_else(|| OasisError("cblock length runs past end of file".into()))?;
+                    let comp = &b[i..end];
+                    i = end;
+                    if comp_type != 0 {
+                        return Err(OasisError(format!(
+                            "cblock compression type {comp_type} unsupported (only DEFLATE=0)"
+                        )));
+                    }
+                    let data = inflate_cblock(comp)?;
+                    self.process(&data)?; // decompressed records continue in this context
+                }
+                other => {
+                    return Err(OasisError(format!(
+                        "unsupported OASIS record {other} ({}) at byte {}; reader covers \
+                         RECTANGLE/POLYGON/PATH/TRAPEZOID/CTRAPEZOID/CIRCLE/TEXT/PLACEMENT + \
+                         repetitions, properties, name tables, and CBLOCK",
+                        record_name(other),
+                        i - 1
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// DEFLATE-inflate a CBLOCK payload (raw RFC-1951; falls back to zlib-wrapped).
+fn inflate_cblock(comp: &[u8]) -> Result<Vec<u8>, OasisError> {
+    miniz_oxide::inflate::decompress_to_vec(comp)
+        .or_else(|_| miniz_oxide::inflate::decompress_to_vec_zlib(comp))
+        .map_err(|e| OasisError(format!("cblock DEFLATE inflate failed: {e:?}")))
+}
+
+/// Translate an element by `(dx, dy)` — used to expand a repetition.
+fn translate(el: &Element, dx: i32, dy: i32) -> Element {
+    let shift = |pts: &[(i32, i32)]| pts.iter().map(|&(x, y)| (x + dx, y + dy)).collect::<Vec<_>>();
+    match el {
+        Element::Boundary { layer, datatype, pts } => {
+            Element::Boundary { layer: *layer, datatype: *datatype, pts: shift(pts) }
+        }
+        Element::Path { layer, datatype, width, pts } => {
+            Element::Path { layer: *layer, datatype: *datatype, width: *width, pts: shift(pts) }
+        }
+        Element::Box { layer, boxtype, pts } => {
+            Element::Box { layer: *layer, boxtype: *boxtype, pts: shift(pts) }
+        }
+        Element::Text { layer, texttype, x, y, string } => {
+            Element::Text { layer: *layer, texttype: *texttype, x: x + dx, y: y + dy, string: string.clone() }
+        }
+        Element::Sref { sname, x, y, reflect, mag, angle } => {
+            Element::Sref { sname: sname.clone(), x: x + dx, y: y + dy, reflect: *reflect, mag: *mag, angle: *angle }
+        }
+        Element::Aref { sname, cols, rows, pts, reflect, mag, angle } => Element::Aref {
+            sname: sname.clone(),
+            cols: *cols,
+            rows: *rows,
+            pts: shift(pts),
+            reflect: *reflect,
+            mag: *mag,
+            angle: *angle,
+        },
+    }
+}
+
+/// A geometry reader returns the element plus the repetition offsets to stamp it at
+/// (empty = a single copy at its own position).
+type GeoResult = Result<(Element, Vec<(i32, i32)>), OasisError>;
+/// Like [`GeoResult`] but the element is optional (a placement may target no cell).
+type PlacementResult = Result<(Option<Element>, Vec<(i32, i32)>), OasisError>;
+
+fn read_rectangle(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     let info = rb(b, i)?;
     let (s, w, h, x, y, r, d, l) = (
         info & 0x80 != 0, info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0,
         info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
     );
     if l {
-        *m_layer = ru(b, i)? as i16;
+        st.m_layer = ru(b, i)? as i16;
     }
     if d {
-        *m_datatype = ru(b, i)? as i16;
+        st.m_datatype = ru(b, i)? as i16;
     }
-    let mut width = 0i64;
-    let mut height = 0i64;
     if w {
-        width = ru(b, i)? as i64;
+        st.m_geom_w = ru(b, i)? as i64;
     }
     if h {
-        height = ru(b, i)? as i64;
+        st.m_geom_h = ru(b, i)? as i64;
     } else if s {
-        height = width; // square: height mirrors width
+        st.m_geom_h = st.m_geom_w; // square: height mirrors width
     }
     if x {
-        *m_x = rs(b, i)? as i32;
+        st.m_x = rs(b, i)? as i32;
     }
     if y {
-        *m_y = rs(b, i)? as i32;
+        st.m_y = rs(b, i)? as i32;
     }
-    if r {
-        return Err(OasisError("rectangle repetition not supported in v0".into()));
-    }
-    let rect = Rect::new(*m_x, *m_y, *m_x + width as i32, *m_y + height as i32);
-    Ok(Element::Boundary { layer: *m_layer, datatype: *m_datatype, pts: rect.as_boundary() })
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
+    let rect = Rect::new(st.m_x, st.m_y, st.m_x + st.m_geom_w as i32, st.m_y + st.m_geom_h as i32);
+    Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts: rect.as_boundary() }, reps))
 }
 
-fn read_polygon(
-    b: &[u8],
-    i: &mut usize,
-    m_layer: &mut i16,
-    m_datatype: &mut i16,
-    m_x: &mut i32,
-    m_y: &mut i32,
-) -> Result<Element, OasisError> {
+fn read_polygon(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     let info = rb(b, i)?;
     let (p, x, y, r, d, l) = (
         info & 0x20 != 0, info & 0x10 != 0, info & 0x08 != 0,
         info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
     );
     if l {
-        *m_layer = ru(b, i)? as i16;
+        st.m_layer = ru(b, i)? as i16;
     }
     if d {
-        *m_datatype = ru(b, i)? as i16;
+        st.m_datatype = ru(b, i)? as i16;
     }
     let deltas: Vec<(i64, i64)> = if p { read_point_list(b, i, true)? } else { Vec::new() };
     if x {
-        *m_x = rs(b, i)? as i32;
+        st.m_x = rs(b, i)? as i32;
     }
     if y {
-        *m_y = rs(b, i)? as i32;
+        st.m_y = rs(b, i)? as i32;
     }
-    if r {
-        return Err(OasisError("polygon repetition not supported in v0".into()));
-    }
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let mut pts = Vec::with_capacity(deltas.len() + 2);
-    let (mut cx, mut cy) = (*m_x as i64, *m_y as i64);
+    let (mut cx, mut cy) = (st.m_x as i64, st.m_y as i64);
     pts.push((cx as i32, cy as i32));
     for (dx, dy) in &deltas {
         cx += dx;
@@ -499,7 +616,7 @@ fn read_polygon(
     if pts.first() != pts.last() {
         pts.push(pts[0]); // close the ring
     }
-    Ok(Element::Boundary { layer: *m_layer, datatype: *m_datatype, pts })
+    Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts }, reps))
 }
 
 /// Read an OASIS point-list → the deltas between successive vertices. Covers the
@@ -584,29 +701,20 @@ fn read_point_list(b: &[u8], i: &mut usize, closed: bool) -> Result<Vec<(i64, i6
 /// PATH record → an open centre-line polyline with a width (`Element::Path`). The
 /// per-end extension scheme is parsed (to stay byte-aligned) but not modeled — our
 /// consumers use the centre-line and width; ends are stroked flush.
-#[allow(clippy::too_many_arguments)]
-fn read_path(
-    b: &[u8],
-    i: &mut usize,
-    m_layer: &mut i16,
-    m_datatype: &mut i16,
-    m_halfwidth: &mut i64,
-    m_x: &mut i32,
-    m_y: &mut i32,
-) -> Result<Element, OasisError> {
+fn read_path(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     let info = rb(b, i)?;
     let (e, w, p, x, y, r, d, l) = (
         info & 0x80 != 0, info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0,
         info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
     );
     if l {
-        *m_layer = ru(b, i)? as i16;
+        st.m_layer = ru(b, i)? as i16;
     }
     if d {
-        *m_datatype = ru(b, i)? as i16;
+        st.m_datatype = ru(b, i)? as i16;
     }
     if w {
-        *m_halfwidth = ru(b, i)? as i64;
+        st.m_halfwidth = ru(b, i)? as i64;
     }
     if e {
         // extension-scheme byte: bits 2-3 start, bits 0-1 end; 3 = explicit signed-int
@@ -620,78 +728,69 @@ fn read_path(
     }
     let deltas = if p { read_point_list(b, i, false)? } else { Vec::new() };
     if x {
-        *m_x = rs(b, i)? as i32;
+        st.m_x = rs(b, i)? as i32;
     }
     if y {
-        *m_y = rs(b, i)? as i32;
+        st.m_y = rs(b, i)? as i32;
     }
-    if r {
-        return Err(OasisError("path repetition not supported in v0".into()));
-    }
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let mut pts = Vec::with_capacity(deltas.len() + 1);
-    let (mut cx, mut cy) = (*m_x as i64, *m_y as i64);
+    let (mut cx, mut cy) = (st.m_x as i64, st.m_y as i64);
     pts.push((cx as i32, cy as i32));
     for (dx, dy) in &deltas {
         cx += dx;
         cy += dy;
         pts.push((cx as i32, cy as i32));
     }
-    Ok(Element::Path { layer: *m_layer, datatype: *m_datatype, width: (2 * *m_halfwidth) as i32, pts })
+    Ok((Element::Path { layer: st.m_layer, datatype: st.m_datatype, width: (2 * st.m_halfwidth) as i32, pts }, reps))
 }
 
 /// TEXT record → a label (`Element::Text`). The string is inline (n-string) or a
 /// reference into the TEXTSTRING table. Uses text-specific modal state so it never
 /// perturbs the geometry modal layer/position.
-#[allow(clippy::too_many_arguments)]
-fn read_text(
-    b: &[u8],
-    i: &mut usize,
-    textstrings: &[String],
-    m_string: &mut String,
-    m_layer: &mut i16,
-    m_type: &mut i16,
-    m_x: &mut i32,
-    m_y: &mut i32,
-) -> Result<Element, OasisError> {
+fn read_text(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     let info = rb(b, i)?;
     let (c, n, x, y, r, t, l) = (
         info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0, info & 0x08 != 0,
         info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
     );
     if c {
-        *m_string = if n {
+        st.m_textstring = if n {
             let rn = ru(b, i)? as usize;
-            textstrings.get(rn).cloned().unwrap_or_default()
+            st.textstrings.get(rn).cloned().unwrap_or_default()
         } else {
             rstr(b, i)?
         };
     }
     if l {
-        *m_layer = ru(b, i)? as i16;
+        st.m_textlayer = ru(b, i)? as i16;
     }
     if t {
-        *m_type = ru(b, i)? as i16;
+        st.m_texttype = ru(b, i)? as i16;
     }
     if x {
-        *m_x = rs(b, i)? as i32;
+        st.m_text_x = rs(b, i)? as i32;
     }
     if y {
-        *m_y = rs(b, i)? as i32;
+        st.m_text_y = rs(b, i)? as i32;
     }
-    if r {
-        return Err(OasisError("text repetition not supported in v0".into()));
-    }
-    Ok(Element::Text { layer: *m_layer, texttype: *m_type, x: *m_x, y: *m_y, string: m_string.clone() })
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
+    let el = Element::Text {
+        layer: st.m_textlayer,
+        texttype: st.m_texttype,
+        x: st.m_text_x,
+        y: st.m_text_y,
+        string: st.m_textstring.clone(),
+    };
+    Ok((el, reps))
 }
 
 fn read_placement(
     b: &[u8],
     i: &mut usize,
     id: u64,
-    cellnames: &[String],
-    m_x: &mut i32,
-    m_y: &mut i32,
-) -> Result<Option<Element>, OasisError> {
+    st: &mut ParseState,
+) -> PlacementResult {
     let info = rb(b, i)?;
     let c = info & 0x80 != 0;
     let n = info & 0x40 != 0; // 1 = reference-number, 0 = name string
@@ -703,7 +802,7 @@ fn read_placement(
     if c {
         if n {
             let rn = ru(b, i)? as usize;
-            sname = cellnames.get(rn).cloned().unwrap_or_else(|| format!("CELL{rn}"));
+            sname = st.cellnames.get(rn).cloned().unwrap_or_else(|| format!("CELL{rn}"));
         } else {
             sname = rstr(b, i)?;
         }
@@ -727,21 +826,355 @@ fn read_placement(
         angle = aa as f64 * 90.0;
     }
     if x {
-        *m_x = rs(b, i)? as i32;
+        st.m_x = rs(b, i)? as i32;
     }
     if y {
-        *m_y = rs(b, i)? as i32;
+        st.m_y = rs(b, i)? as i32;
     }
-    if r {
-        return Err(OasisError("placement repetition not supported in v0".into()));
-    }
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     if angle == -0.0 {
         angle = 0.0;
     }
     if !c {
-        return Ok(None); // placement without a target cell — skip
+        return Ok((None, reps)); // placement without a target cell — skip
     }
-    Ok(Some(Element::Sref { sname, x: *m_x, y: *m_y, reflect, mag, angle }))
+    Ok((Some(Element::Sref { sname, x: st.m_x, y: st.m_y, reflect, mag, angle }), reps))
+}
+
+// ---- trapezoids, circle, repetition, and skipped-record helpers ---------------
+
+/// TRAPEZOID (records 23/24/25): a bounding box (w,h) at (x,y) with two edge deltas
+/// slanting the parallel-edge orientation set by the `O` info bit.
+fn read_trapezoid(b: &[u8], i: &mut usize, id: u64, st: &mut ParseState) -> GeoResult {
+    let info = rb(b, i)?;
+    let o = info & 0x80 != 0; // 0 = horizontal parallel edges, 1 = vertical
+    let (w, h, x, y, r, d, l) = (
+        info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0,
+        info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    if l {
+        st.m_layer = ru(b, i)? as i16;
+    }
+    if d {
+        st.m_datatype = ru(b, i)? as i16;
+    }
+    if w {
+        st.m_geom_w = ru(b, i)? as i64;
+    }
+    if h {
+        st.m_geom_h = ru(b, i)? as i64;
+    }
+    let delta_a = if id != R_TRAPEZOID_B { rs(b, i)? } else { 0 };
+    let delta_b = if id != R_TRAPEZOID_A { rs(b, i)? } else { 0 };
+    if x {
+        st.m_x = rs(b, i)? as i32;
+    }
+    if y {
+        st.m_y = rs(b, i)? as i32;
+    }
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
+    let (px, py, ww, hh) = (st.m_x as i64, st.m_y as i64, st.m_geom_w, st.m_geom_h);
+    // SEMI-P39 §28: (x,y) is the bounding-box lower-left. Horizontal → delta_a = xP−xR,
+    // delta_b = xQ−xS (R,S bottom; P,Q top); vertical → delta_a = yP−yR, delta_b = yQ−yS
+    // (P,Q left edge; R,S right edge). The reference corner sits on the bbox edge and the
+    // partner is offset by the delta (clamp so the bbox stays [x,x+w]×[y,y+h]).
+    let v: Vec<(i64, i64)> = if !o {
+        let xr = px - delta_a.min(0);
+        let xp = xr + delta_a;
+        let xs = px + ww - delta_b.max(0);
+        let xq = xs + delta_b;
+        vec![(xr, py), (xs, py), (xq, py + hh), (xp, py + hh)]
+    } else {
+        let yr = py - delta_a.min(0);
+        let yp = yr + delta_a;
+        let ys = py + hh - delta_b.max(0);
+        let yq = ys + delta_b;
+        vec![(px, yp), (px + ww, yr), (px + ww, ys), (px, yq)]
+    };
+    let mut pts: Vec<(i32, i32)> = v.into_iter().map(|(a, c)| (a as i32, c as i32)).collect();
+    if pts.first() != pts.last() {
+        if let Some(&f) = pts.first() {
+            pts.push(f);
+        }
+    }
+    Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts }, reps))
+}
+
+/// CTRAPEZOID (record 26): one of 26 compact trapezoid/triangle shapes in the
+/// bounding box (w,h) at (x,y). Types are expanded to explicit polygons.
+fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
+    let info = rb(b, i)?;
+    let t_present = info & 0x80 != 0;
+    let (w, h, x, y, r, d, l) = (
+        info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0,
+        info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    if l {
+        st.m_layer = ru(b, i)? as i16;
+    }
+    if d {
+        st.m_datatype = ru(b, i)? as i16;
+    }
+    let ctype = if t_present { ru(b, i)? } else { 0 };
+    if w {
+        st.m_geom_w = ru(b, i)? as i64;
+    }
+    if h {
+        st.m_geom_h = ru(b, i)? as i64;
+    }
+    // Triangle/square ctrapezoid types store only one dimension; the other equals it.
+    if !h {
+        st.m_geom_h = st.m_geom_w;
+    }
+    if !w {
+        st.m_geom_w = st.m_geom_h;
+    }
+    if x {
+        st.m_x = rs(b, i)? as i32;
+    }
+    if y {
+        st.m_y = rs(b, i)? as i32;
+    }
+    let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
+    let pts = ctrapezoid_polygon(ctype, st.m_x as i64, st.m_y as i64, st.m_geom_w, st.m_geom_h)?;
+    Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts }, reps))
+}
+
+/// Expand a CTRAPEZOID type (0..25) at `(x,y)` with box `(w,h)` into a closed polygon.
+/// The 26 forms are the SEMI-P39 compact set: 0–3 wedges off a full box, 4–7 double
+/// wedges, 8–15 half-height/width wedges, 16–23 the four right triangles, 24 a square,
+/// 25 a rectangle.
+fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<(i32, i32)>, OasisError> {
+    let (x0, y0, x1, y1) = (x, y, x + w, y + h);
+    let close = |mut v: Vec<(i64, i64)>| {
+        if v.first() != v.last() {
+            if let Some(&f) = v.first() {
+                v.push(f);
+            }
+        }
+        v.into_iter().map(|(a, c)| (a as i32, c as i32)).collect::<Vec<_>>()
+    };
+    let v = match ctype {
+        // 0..3 horizontal right-trapezoids, one 45° corner cut of leg h (w >= h)
+        0 => vec![(x0, y0), (x1, y0), (x1 - h, y1), (x0, y1)],
+        1 => vec![(x0, y0), (x1, y0), (x1, y1), (x0 + h, y1)],
+        2 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0, y1)],
+        3 => vec![(x0 + h, y0), (x1, y0), (x1, y1), (x0, y1)],
+        // 4..5 isoceles horizontal trapezoids, 6..7 horizontal parallelograms (w >= 2h)
+        4 => vec![(x0, y0), (x1, y0), (x1 - h, y1), (x0 + h, y1)],
+        5 => vec![(x0 + h, y0), (x1 - h, y0), (x1, y1), (x0, y1)],
+        6 => vec![(x0 + h, y0), (x1, y0), (x1 - h, y1), (x0, y1)],
+        7 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0 + h, y1)],
+        // 8..11 vertical right-trapezoids, one 45° cut of leg w (h >= w)
+        8 => vec![(x0, y0), (x1, y0), (x1, y1 - w), (x0, y1)],
+        9 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1 - w)],
+        10 => vec![(x0, y0), (x1, y0 + w), (x1, y1), (x0, y1)],
+        11 => vec![(x0, y0 + w), (x1, y0), (x1, y1), (x0, y1)],
+        // 12..13 isoceles vertical trapezoids, 14..15 vertical parallelograms (h >= 2w)
+        12 => vec![(x0, y0), (x1, y0 + w), (x1, y1 - w), (x0, y1)],
+        13 => vec![(x0, y0 + w), (x1, y0), (x1, y1), (x0, y1 - w)],
+        14 => vec![(x0, y0), (x1, y0 + w), (x1, y1), (x0, y1 - w)],
+        15 => vec![(x0, y0 + w), (x1, y0), (x1, y1 - w), (x0, y1)],
+        // 16..19 the four right triangles (legs w = h)
+        16 => vec![(x0, y0), (x1, y0), (x0, y1)],
+        17 => vec![(x0, y0), (x1, y0), (x1, y1)],
+        18 => vec![(x1, y0), (x1, y1), (x0, y1)],
+        19 => vec![(x0, y0), (x1, y1), (x0, y1)],
+        24 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // rectangle (w x h)
+        25 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // square (w x w)
+        // 20..23 are the rare 2x isoceles-triangle forms; not yet validated, so we
+        // error clearly rather than emit possibly-wrong geometry (types 0..19,24,25 are
+        // validated against gdstk).
+        20..=23 => {
+            return Err(OasisError(format!(
+                "ctrapezoid type {ctype} (2x isoceles triangle) not yet supported — please report"
+            )))
+        }
+        t => return Err(OasisError(format!("ctrapezoid type {t} out of range (0..25)"))),
+    };
+    Ok(close(v))
+}
+
+/// CIRCLE (record 27): centre + radius, approximated as a 48-gon polygon.
+fn read_circle(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
+    let info = rb(b, i)?;
+    let (has_r, x, y, rep, d, l) = (
+        info & 0x20 != 0, info & 0x10 != 0, info & 0x08 != 0,
+        info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    if l {
+        st.m_layer = ru(b, i)? as i16;
+    }
+    if d {
+        st.m_datatype = ru(b, i)? as i16;
+    }
+    let radius = if has_r { ru(b, i)? as i64 } else { st.m_halfwidth };
+    st.m_halfwidth = radius; // circle radius shares the half-width modal per spec
+    if x {
+        st.m_x = rs(b, i)? as i32;
+    }
+    if y {
+        st.m_y = rs(b, i)? as i32;
+    }
+    let reps = if rep { read_repetition(b, i, st)? } else { Vec::new() };
+    const N: usize = 48;
+    let (cx, cy, rr) = (st.m_x as f64, st.m_y as f64, radius as f64);
+    let mut pts: Vec<(i32, i32)> = (0..N)
+        .map(|k| {
+            let a = std::f64::consts::TAU * k as f64 / N as f64;
+            ((cx + rr * a.cos()).round() as i32, (cy + rr * a.sin()).round() as i32)
+        })
+        .collect();
+    if let Some(&f) = pts.first() {
+        pts.push(f);
+    }
+    Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts }, reps))
+}
+
+/// Read a repetition → the list of `(dx, dy)` offsets to stamp a shape at. Type 0
+/// reuses the modal repetition; every other type also updates it.
+fn read_repetition(b: &[u8], i: &mut usize, st: &mut ParseState) -> Result<Vec<(i32, i32)>, OasisError> {
+    let rtype = ru(b, i)?;
+    let g = |v: (i64, i64)| (v.0 as i32, v.1 as i32);
+    let reps: Vec<(i32, i32)> = match rtype {
+        0 => return Ok(st.m_repetition.clone()),
+        1 => {
+            let (nx, ny) = (ru(b, i)? as i64 + 2, ru(b, i)? as i64 + 2);
+            let (dx, dy) = (ru(b, i)? as i64, ru(b, i)? as i64);
+            (0..ny).flat_map(|iy| (0..nx).map(move |ix| ((ix * dx) as i32, (iy * dy) as i32))).collect()
+        }
+        2 => {
+            let n = ru(b, i)? as i64 + 2;
+            let dx = ru(b, i)? as i64;
+            (0..n).map(|ix| ((ix * dx) as i32, 0)).collect()
+        }
+        3 => {
+            let n = ru(b, i)? as i64 + 2;
+            let dy = ru(b, i)? as i64;
+            (0..n).map(|iy| (0, (iy * dy) as i32)).collect()
+        }
+        4 | 5 => {
+            let n = ru(b, i)? as usize + 2;
+            let grid = if rtype == 5 { ru(b, i)? as i64 } else { 1 };
+            let mut xs = 0i64;
+            let mut v = vec![(0, 0)];
+            for _ in 0..n - 1 {
+                xs += ru(b, i)? as i64 * grid;
+                v.push((xs as i32, 0));
+            }
+            v
+        }
+        6 | 7 => {
+            let n = ru(b, i)? as usize + 2;
+            let grid = if rtype == 7 { ru(b, i)? as i64 } else { 1 };
+            let mut ys = 0i64;
+            let mut v = vec![(0, 0)];
+            for _ in 0..n - 1 {
+                ys += ru(b, i)? as i64 * grid;
+                v.push((0, ys as i32));
+            }
+            v
+        }
+        8 => {
+            let (nx, ny) = (ru(b, i)? as i64 + 2, ru(b, i)? as i64 + 2);
+            let (ax, ay) = read_gdelta(b, i)?;
+            let (bx, by) = read_gdelta(b, i)?;
+            (0..ny)
+                .flat_map(|iy| {
+                    (0..nx).map(move |ix| ((ix * ax + iy * bx) as i32, (ix * ay + iy * by) as i32))
+                })
+                .collect()
+        }
+        9 => {
+            let n = ru(b, i)? as i64 + 2;
+            let (gx, gy) = read_gdelta(b, i)?;
+            (0..n).map(|k| ((k * gx) as i32, (k * gy) as i32)).collect()
+        }
+        10 | 11 => {
+            let n = ru(b, i)? as usize + 2;
+            let grid = if rtype == 11 { ru(b, i)? as i64 } else { 1 };
+            let (mut cx, mut cy) = (0i64, 0i64);
+            let mut v = vec![(0, 0)];
+            for _ in 0..n - 1 {
+                let (gx, gy) = read_gdelta(b, i)?;
+                cx += gx * grid;
+                cy += gy * grid;
+                v.push(g((cx, cy)));
+            }
+            v
+        }
+        t => return Err(OasisError(format!("repetition type {t} not supported"))),
+    };
+    st.m_repetition = reps.clone();
+    Ok(reps)
+}
+
+/// Skip a LAYERNAME interval (`type` + up to two bounds).
+fn read_interval(b: &[u8], i: &mut usize) -> Result<(), OasisError> {
+    let t = ru(b, i)?;
+    match t {
+        0 => {}                 // all values
+        1..=3 => { ru(b, i)?; }
+        4 => { ru(b, i)?; ru(b, i)?; }
+        _ => return Err(OasisError(format!("bad interval type {t}"))),
+    }
+    Ok(())
+}
+
+/// Skip a PROPNAME/PROPSTRING/XNAME explicit record (a string + a reference number).
+fn skip_name_record(b: &[u8], i: &mut usize, _id: u64) -> Result<(), OasisError> {
+    rstr(b, i)?; // the name / string
+    ru(b, i)?; // the reference number
+    Ok(())
+}
+
+/// Skip a PROPERTY record without modeling it — consume its typed value list so the
+/// stream stays aligned.
+fn skip_property(b: &[u8], i: &mut usize, id: u64) -> Result<(), OasisError> {
+    if id == R_PROPERTY_REPEAT {
+        return Ok(()); // reuse the modal property — nothing to consume
+    }
+    let info = rb(b, i)?;
+    let (c, n, v_present) = (info & 0x04 != 0, info & 0x02 != 0, info & 0x01 == 0);
+    if c {
+        if n {
+            ru(b, i)?; // propname reference number
+        } else {
+            rstr(b, i)?; // propname string
+        }
+    }
+    if v_present {
+        // value-count is the high nibble of the info byte (15 → an explicit uint)
+        let count = if (info >> 4) == 15 { ru(b, i)? } else { (info >> 4) as u64 };
+        for _ in 0..count {
+            skip_prop_value(b, i)?;
+        }
+    }
+    Ok(())
+}
+
+/// Skip one PROPERTY value by its leading type byte.
+fn skip_prop_value(b: &[u8], i: &mut usize) -> Result<(), OasisError> {
+    let t = ru(b, i)?;
+    match t {
+        0..=7 => {
+            rreal_typed(b, i, t)?;
+        }
+        8 => {
+            ru(b, i)?;
+        } // unsigned-integer
+        9 => {
+            rs(b, i)?;
+        } // signed-integer
+        10..=12 => {
+            rstr(b, i)?;
+        } // a/b/n-string
+        13..=15 => {
+            ru(b, i)?;
+        } // prop-string reference number
+        other => return Err(OasisError(format!("bad property value type {other}"))),
+    }
+    Ok(())
 }
 
 // ---- primitives ---------------------------------------------------------------
@@ -864,6 +1297,12 @@ fn wreal_f64(o: &mut Vec<u8>, v: f64) {
 
 fn rreal(b: &[u8], i: &mut usize) -> Result<f64, OasisError> {
     let t = ru(b, i)?;
+    rreal_typed(b, i, t)
+}
+
+/// Read a real's payload given its already-consumed type byte (shared by `rreal` and
+/// the PROPERTY value skipper, where the type is the value tag).
+fn rreal_typed(b: &[u8], i: &mut usize, t: u64) -> Result<f64, OasisError> {
     let read_bytes = |i: &mut usize, n: usize| -> Result<Vec<u8>, OasisError> {
         let end = i.checked_add(n).filter(|e| *e <= b.len()).ok_or_else(|| OasisError("real runs past end".into()))?;
         let v = b[*i..end].to_vec();
@@ -1017,6 +1456,22 @@ mod tests {
     #[test]
     fn magic_is_checked() {
         assert!(parse(b"not-oasis").is_err());
+    }
+
+    #[test]
+    fn ctrapezoid_validated_shapes() {
+        use crate::geom::poly_area;
+        // type 16: right triangle, legs 40 → area 800
+        assert_eq!(poly_area(&ctrapezoid_polygon(16, 0, 0, 40, 40).unwrap()), 800.0);
+        // type 0: 100×40 box, 45° cut of leg h=40 at top-right → 3200
+        assert_eq!(poly_area(&ctrapezoid_polygon(0, 0, 0, 100, 40).unwrap()), 3200.0);
+        // type 8: vertical, 40×100 box, 45° cut of leg w=40 at top-right → 3200
+        assert_eq!(poly_area(&ctrapezoid_polygon(8, 0, 0, 40, 100).unwrap()), 3200.0);
+        // type 24: rectangle 40×40 → 1600
+        assert_eq!(poly_area(&ctrapezoid_polygon(24, 0, 0, 40, 40).unwrap()), 1600.0);
+        // the rare 2× forms (20..23) error rather than emit possibly-wrong geometry
+        assert!(ctrapezoid_polygon(20, 0, 0, 40, 40).is_err());
+        assert!(ctrapezoid_polygon(99, 0, 0, 40, 40).is_err());
     }
 
     #[test]

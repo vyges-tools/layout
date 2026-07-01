@@ -10,7 +10,7 @@ Rust, std-only**, so the Vyges layout tools share one auditable base.
 | --- | --- | --- |
 | GDSII read/write (round-trip) | ✅ BOUNDARY/PATH/SREF/AREF/BOX | ✅ full |
 | OASIS write | ✅ RECTANGLE/POLYGON/PLACEMENT subset (GDS↔OASIS convert) | ✅ full |
-| OASIS read (third-party) | ◐ RECTANGLE/POLYGON(+manhattan implied-closure)/PATH/TEXT/PLACEMENT — validated on a real sky130 corpus (gdstk); depth: TRAPEZOID/PROPERTY/repetition/strict tables/CBLOCK | ✅ full |
+| OASIS read (third-party) | ✅ full record set: RECTANGLE/POLYGON(+manhattan closure)/PATH/TRAPEZOID/CTRAPEZOID/CIRCLE/TEXT/PLACEMENT + repetitions + properties/name-tables + **CBLOCK (DEFLATE via miniz_oxide)**; validated on real sky130 (gdstk, compressed+raw) == GDS. Gap: rare CTRAPEZOID 20–23 (error, not guessed) | ✅ full |
 | Per-layer stats (`info`) | ✅ | ✅ |
 | Boolean AND/OR/NOT/XOR | ✅ Manhattan rectilinear polygons (scanline) | ✅ general polygons (Vatti/edge) |
 | Hierarchy flatten | ✅ SREF/AREF, composed transforms | ✅ |

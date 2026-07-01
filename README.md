@@ -20,13 +20,15 @@ nets), DRC (width/spacing), metal fill, and viewing a die — they all need to r
 GDSII, do boolean operations on shapes, and flatten hierarchy. The open peers
 (KLayout's database, gdstk) are excellent but C++; `vyges-layout` is the **clean-room,
 memory-safe Rust** kernel, so the Vyges layout tools (and the chip viewer) build on a
-single, auditable, std-only base — and it's the dependency that unblocks
-[`vyges-lvs`](https://github.com/vyges-tools/lvs) native extraction.
+single, auditable base — and it's the dependency that unblocks
+[`vyges-lvs`](https://github.com/vyges-tools/lvs) native extraction. It is
+**dependency-light and pure-Rust**: the only non-Vyges dependency is `miniz_oxide`
+(permissive, pure-Rust DEFLATE) for OASIS CBLOCK decompression — no C toolchain, no GPL.
 
 ## Use it
 
 ```sh
-cargo build --release            # std-only, no external deps
+cargo build --release            # pure-Rust; one small permissive dep (miniz_oxide)
 
 vyges-layout info    block.gds                 # cells, layers, areas, bbox
 vyges-layout info    block.gds --json
@@ -92,15 +94,16 @@ rectilinear polygon exactly, but the result is returned as a set of rectangles t
 the region (contour-tracing into merged polygons is depth), and **general-angle**
 geometry (a diagonal edge) is bbox-approximated and **counted** (never silently
 dropped). General clipping (Vatti) is the depth pass. Arbitrary reference angles round
-to integer DBU. **OASIS** read/write covers the RECTANGLE / POLYGON / PLACEMENT subset
-this kernel emits (`Path` is stroked to rectangles; `Text` labels are not written; no
-CBLOCK compression). The **reader** goes further than the writer — it ingests
-RECTANGLE / POLYGON (including the manhattan implied-closure real writers use) / PATH /
-TEXT / PLACEMENT, **validated against a real third-party corpus**: the sky130 standard-
-cell GDS converted to OASIS by `gdstk` reads back **per-layer-identical** to the GDS
-through both readers. Remaining third-party-ingest depth (surfaced by that corpus):
-TRAPEZOID / CTRAPEZOID, PROPERTY, repetitions, strict end-of-file name tables, and
-CBLOCK (DEFLATE) decompression. The `RegionIndex`
+to integer DBU. The **OASIS reader is full-coverage** — RECTANGLE, POLYGON (with the
+manhattan implied-closure real writers use), PATH, TRAPEZOID, CTRAPEZOID, CIRCLE, TEXT,
+PLACEMENT, all repetition forms, properties/name tables, and **CBLOCK (DEFLATE)
+compression** — **validated against a real third-party corpus**: the sky130 standard-cell
+GDS converted to OASIS by `gdstk` (both compressed and raw) reads back
+**geometry-identical** to the source GDS, and a spread of gdstk trapezoids/triangles
+match by area. The **writer** emits the RECTANGLE / POLYGON / PLACEMENT subset (`Path`
+stroked to rectangles; `Text` not written; uncompressed). Remaining ingest gap: the rare
+CTRAPEZOID 2× isoceles-triangle types (20–23), which error clearly rather than guess. The
+`RegionIndex`
 spatial index provides region/overlap/spacing-halo queries; **DRC width/spacing rules**
 on top of it, rectangle sizing, and **net tracing for device extraction** (the piece
 `vyges-lvs` Phase 2 consumes) are reserved.
