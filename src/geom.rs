@@ -15,6 +15,20 @@ impl Rect {
     pub fn area(&self) -> i64 {
         (self.x1 - self.x0) as i64 * (self.y1 - self.y0) as i64
     }
+    /// True if the two rectangles share positive area (touching edges do **not**
+    /// count — that is the boolean/DRC "overlap" sense).
+    pub fn intersects(&self, o: &Rect) -> bool {
+        self.x0 < o.x1 && o.x0 < self.x1 && self.y0 < o.y1 && o.y0 < self.y1
+    }
+    /// Grow (or shrink, if `d < 0`) the rectangle by `d` on every side — the halo a
+    /// spacing query needs. Never inverts: a collapsed rectangle clamps to zero size.
+    pub fn inflate(&self, d: i32) -> Rect {
+        let x0 = self.x0 - d;
+        let y0 = self.y0 - d;
+        let x1 = (self.x1 + d).max(x0);
+        let y1 = (self.y1 + d).max(y0);
+        Rect { x0, y0, x1, y1 }
+    }
     pub fn as_boundary(&self) -> Vec<(i32, i32)> {
         vec![
             (self.x0, self.y0),

@@ -13,14 +13,16 @@
 //! v0 scope: a GDSII reader/writer (round-trip), an **OASIS reader/writer** (the
 //! compact modern interchange format — RECTANGLE / POLYGON / PLACEMENT subset),
 //! per-layer stats (`info`), hierarchy flatten (SREF; AREF arrays), and **Manhattan
-//! boolean** (AND/OR/NOT/XOR) on axis-aligned rectangles via a scanline. Depth
+//! boolean** (AND/OR/NOT/XOR) on axis-aligned rectangles via a scanline, and a
+//! **spatial index** (`index`) for region/overlap/spacing-halo queries. Depth
 //! reserved: rectilinear-polygon decomposition + general-angle clipping (Vatti),
-//! full third-party OASIS ingest, sizing/region (DRC width & spacing), and net
-//! tracing for extraction.
+//! full third-party OASIS ingest, DRC width/spacing *rules* on top of the region
+//! index, and net tracing for extraction.
 
 pub mod gds;
 pub mod oasis;
 pub mod geom;
+pub mod index;
 pub mod boolean;
 pub mod flatten;
 pub mod engine;

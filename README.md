@@ -82,6 +82,10 @@ domain; the analog shapes above are rectilinear and handled exactly.
   integer coordinates → exact), output to a layer.
 - **flatten** — expand SREF/AREF hierarchy into one cell (reflect → mag → rotate →
   translate, composed; AREF arrays expanded; cycles guarded).
+- **spatial index** (`index::RegionIndex`) — a uniform-grid index over rectangles for
+  fast *region* / *overlap* / *spacing-halo* queries (the "what's near this shape?"
+  primitive DRC width/spacing, LVS net tracing, and the viewer need to scale beyond
+  O(N²)). Library API; validated against brute force.
 
 **Honest bounds (depth reserved).** v0 boolean is **Manhattan** — it handles any
 rectilinear polygon exactly, but the result is returned as a set of rectangles tiling
@@ -90,9 +94,10 @@ geometry (a diagonal edge) is bbox-approximated and **counted** (never silently
 dropped). General clipping (Vatti) is the depth pass. Arbitrary reference angles round
 to integer DBU. **OASIS** read/write covers the RECTANGLE / POLYGON / PLACEMENT subset
 this kernel emits (`Path` is stroked to rectangles; `Text` labels are not written; no
-CBLOCK compression) — full third-party OASIS ingest is a depth pass. Reserved: sizing +
-region queries (DRC width/spacing), and **net tracing for device extraction** (the piece
-`vyges-lvs` Phase 2 consumes).
+CBLOCK compression) — full third-party OASIS ingest is a depth pass. The `RegionIndex`
+spatial index provides region/overlap/spacing-halo queries; **DRC width/spacing rules**
+on top of it, rectangle sizing, and **net tracing for device extraction** (the piece
+`vyges-lvs` Phase 2 consumes) are reserved.
 
 ## License
 
@@ -102,5 +107,6 @@ libraries, not products; this is the Rust one.
 ## Current state (v0)
 
 GDSII **and OASIS** read/write (GDS↔OASIS convert), `info`, Manhattan boolean
-(and/or/not/xor), and hierarchy flatten; text + JSON; runnable example. Pure std,
-unit + example tested offline, no subprocess.
+(and/or/not/xor), hierarchy flatten, and a uniform-grid **spatial index** for
+region/overlap/spacing queries; text + JSON; runnable example. Pure std, unit +
+example tested offline, no subprocess.

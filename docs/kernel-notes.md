@@ -13,7 +13,8 @@ Rust, std-only**, so the Vyges layout tools share one auditable base.
 | Per-layer stats (`info`) | ✅ | ✅ |
 | Boolean AND/OR/NOT/XOR | ✅ Manhattan rectilinear polygons (scanline) | ✅ general polygons (Vatti/edge) |
 | Hierarchy flatten | ✅ SREF/AREF, composed transforms | ✅ |
-| Sizing / region (DRC width·spacing) | ❌ (depth) | ✅ |
+| Spatial index (region / overlap / spacing-halo queries) | ✅ uniform-grid `RegionIndex` | ✅ (R-tree) |
+| Sizing + DRC width·spacing *rules* | ❌ (depth — on top of the index) | ✅ |
 | Net tracing / device extraction | ❌ Phase 2 (the `vyges-lvs` seam) | ◐ (KLayout LVS) |
 
 ## Boolean: the Manhattan scanline (v0)
@@ -28,7 +29,10 @@ boundary is bbox-approximated and **counted** in the report (no silent caps).
 
 1. **Rectilinear-polygon decomposition** → run the same scanline on L-shapes etc.
 2. **General-angle clipping** (Vatti / Greiner-Hormann) for non-Manhattan geometry.
-3. **Sizing + region queries** (grow/shrink, width/spacing) → DRC primitives.
+3. **DRC width/spacing rules** on top of the `RegionIndex` region/overlap/halo
+   queries (the spatial-index primitive itself has landed); plus rectangle sizing
+   (grow/shrink). `RegionIndex` is a candidate for extraction into a shared geometry
+   crate once a second engine consumes it directly.
 4. **Net tracing + device recognition** → the `vyges-lvs` Phase-2 extraction seam.
 5. **Full third-party OASIS ingest** (TRAPEZOID/CTRAPEZOID/PATH/CBLOCK/properties, modal
    compaction, matrix repetitions) on top of the v0 RECTANGLE/POLYGON/PLACEMENT subset;
