@@ -31,6 +31,9 @@ const R_START: u64 = 1;
 const R_END: u64 = 2;
 const R_CELLNAME_IMPLICIT: u64 = 3;
 const R_CELLNAME_EXPLICIT: u64 = 4;
+const R_TEXTSTRING_IMPLICIT: u64 = 5;
+const R_TEXTSTRING_EXPLICIT: u64 = 6;
+const R_TEXT: u64 = 19;
 const R_CELL_REF: u64 = 13;
 const R_CELL_NAME: u64 = 14;
 const R_XYABSOLUTE: u64 = 15;
@@ -39,6 +42,28 @@ const R_PLACEMENT: u64 = 17;
 const R_PLACEMENT_TRANSFORM: u64 = 18;
 const R_RECTANGLE: u64 = 20;
 const R_POLYGON: u64 = 21;
+const R_PATH: u64 = 22;
+
+/// Human name for an OASIS record id — makes "unsupported record" errors actionable
+/// (which is the depth item to grow next) instead of a bare number.
+fn record_name(id: u64) -> &'static str {
+    match id {
+        5 | 6 => "TEXTSTRING",
+        7 | 8 => "PROPNAME",
+        9 | 10 => "PROPSTRING",
+        11 | 12 => "LAYERNAME",
+        19 => "TEXT",
+        23..=25 => "TRAPEZOID",
+        26 => "CTRAPEZOID",
+        27 => "CIRCLE",
+        28 | 29 => "PROPERTY",
+        30 | 31 => "XNAME",
+        32 => "XELEMENT",
+        33 => "XGEOMETRY",
+        34 => "CBLOCK",
+        _ => "unknown",
+    }
+}
 
 #[derive(Debug)]
 pub struct OasisError(pub String);
@@ -265,12 +290,20 @@ pub fn parse(b: &[u8]) -> Result<Library, OasisError> {
     let mut i = MAGIC.len();
     let mut lib = Library::default();
     let mut cellnames: Vec<String> = Vec::new();
+    let mut textstrings: Vec<String> = Vec::new();
     let mut cell: Option<Cell> = None;
     // modal state
     let mut m_layer: i16 = 0;
     let mut m_datatype: i16 = 0;
+    let mut m_halfwidth: i64 = 0;
     let mut m_x: i32 = 0;
     let mut m_y: i32 = 0;
+    // text has its own modal layer/type/position/string, separate from geometry
+    let mut m_textlayer: i16 = 0;
+    let mut m_texttype: i16 = 0;
+    let mut m_text_x: i32 = 0;
+    let mut m_text_y: i32 = 0;
+    let mut m_textstring = String::new();
 
     let push_cell = |lib: &mut Library, cell: &mut Option<Cell>| {
         if let Some(c) = cell.take() {
@@ -298,6 +331,15 @@ pub fn parse(b: &[u8]) -> Result<Library, OasisError> {
             }
             R_END => break,
             R_CELLNAME_IMPLICIT => cellnames.push(rstr(b, &mut i)?),
+            R_TEXTSTRING_IMPLICIT => textstrings.push(rstr(b, &mut i)?),
+            R_TEXTSTRING_EXPLICIT => {
+                let s = rstr(b, &mut i)?;
+                let rn = ru(b, &mut i)? as usize;
+                if rn >= textstrings.len() {
+                    textstrings.resize(rn + 1, String::new());
+                }
+                textstrings[rn] = s;
+            }
             R_CELLNAME_EXPLICIT => {
                 let name = rstr(b, &mut i)?;
                 let rn = ru(b, &mut i)? as usize;
@@ -330,6 +372,27 @@ pub fn parse(b: &[u8]) -> Result<Library, OasisError> {
                     c.elements.push(el);
                 }
             }
+            R_PATH => {
+                let el = read_path(b, &mut i, &mut m_layer, &mut m_datatype, &mut m_halfwidth, &mut m_x, &mut m_y)?;
+                if let Some(c) = cell.as_mut() {
+                    c.elements.push(el);
+                }
+            }
+            R_TEXT => {
+                let el = read_text(
+                    b,
+                    &mut i,
+                    &textstrings,
+                    &mut m_textstring,
+                    &mut m_textlayer,
+                    &mut m_texttype,
+                    &mut m_text_x,
+                    &mut m_text_y,
+                )?;
+                if let Some(c) = cell.as_mut() {
+                    c.elements.push(el);
+                }
+            }
             R_PLACEMENT | R_PLACEMENT_TRANSFORM => {
                 let el = read_placement(b, &mut i, id, &cellnames, &mut m_x, &mut m_y)?;
                 if let (Some(c), Some(el)) = (cell.as_mut(), el) {
@@ -337,8 +400,14 @@ pub fn parse(b: &[u8]) -> Result<Library, OasisError> {
                 }
             }
             other => {
+                let hint = if other == 34 {
+                    " — DEFLATE-compressed blocks; write uncompressed (e.g. gdstk compression_level=0)"
+                } else {
+                    ""
+                };
                 return Err(OasisError(format!(
-                    "unsupported OASIS record id {other} at byte {}; v0 reads the subset this engine writes",
+                    "unsupported OASIS record {other} ({}) at byte {}{hint}; v0 reads RECTANGLE/POLYGON/PATH/PLACEMENT",
+                    record_name(other),
                     i - 1
                 )));
             }
@@ -409,28 +478,7 @@ fn read_polygon(
     if d {
         *m_datatype = ru(b, i)? as i16;
     }
-    let mut deltas: Vec<(i64, i64)> = Vec::new();
-    if p {
-        let ptype = ru(b, i)?;
-        let count = ru(b, i)? as usize;
-        match ptype {
-            4 | 5 => {
-                for _ in 0..count {
-                    deltas.push(read_gdelta(b, i)?);
-                }
-            }
-            0 | 1 => {
-                // manhattan: alternating 1-deltas; type 0 starts horizontal, 1 vertical
-                let mut horiz = ptype == 0;
-                for _ in 0..count {
-                    let d1 = rs(b, i)?;
-                    deltas.push(if horiz { (d1, 0) } else { (0, d1) });
-                    horiz = !horiz;
-                }
-            }
-            t => return Err(OasisError(format!("polygon point-list type {t} not supported in v0"))),
-        }
-    }
+    let deltas: Vec<(i64, i64)> = if p { read_point_list(b, i, true)? } else { Vec::new() };
     if x {
         *m_x = rs(b, i)? as i32;
     }
@@ -452,6 +500,188 @@ fn read_polygon(
         pts.push(pts[0]); // close the ring
     }
     Ok(Element::Boundary { layer: *m_layer, datatype: *m_datatype, pts })
+}
+
+/// Read an OASIS point-list → the deltas between successive vertices. Covers the
+/// manhattan (0/1 alternating, 2 any-direction), octangular (3), and all-angle
+/// g-delta (4) forms — the ones real writers emit; the double-delta form (5) is
+/// reserved.
+///
+/// `closed` = the shape auto-closes (a POLYGON, not a PATH). For the alternating
+/// manhattan forms (0/1) a closed shape **omits its last delta** — the
+/// (count+1)th edge continues the H/V alternation back to the start axis, and the
+/// ring closes on the other axis. We synthesize that implied delta; without it the
+/// straight ring-closure cuts a corner (real writers, e.g. gdstk, use type 0).
+fn read_point_list(b: &[u8], i: &mut usize, closed: bool) -> Result<Vec<(i64, i64)>, OasisError> {
+    let ptype = ru(b, i)?;
+    let count = ru(b, i)? as usize;
+    let mut deltas = Vec::with_capacity(count);
+    match ptype {
+        0 | 1 => {
+            // manhattan, alternating 1-deltas; type 0 starts horizontal, 1 vertical
+            let mut horiz = ptype == 0;
+            let (mut sum_h, mut sum_v) = (0i64, 0i64);
+            for _ in 0..count {
+                let d1 = rs(b, i)?;
+                if horiz {
+                    deltas.push((d1, 0));
+                    sum_h += d1;
+                } else {
+                    deltas.push((0, d1));
+                    sum_v += d1;
+                }
+                horiz = !horiz;
+            }
+            if closed {
+                // `horiz` now holds the orientation of the implied (count+1)th delta.
+                if horiz {
+                    deltas.push((-sum_h, 0));
+                } else {
+                    deltas.push((0, -sum_v));
+                }
+            }
+        }
+        2 => {
+            // manhattan, each a 2-delta: 2 low bits = direction, rest = magnitude
+            for _ in 0..count {
+                let v = ru(b, i)?;
+                let m = (v >> 2) as i64;
+                deltas.push(match v & 3 {
+                    0 => (m, 0),
+                    1 => (0, m),
+                    2 => (-m, 0),
+                    _ => (0, -m),
+                });
+            }
+        }
+        3 => {
+            // octangular, each a 3-delta: 3 low bits = direction, rest = magnitude
+            for _ in 0..count {
+                let v = ru(b, i)?;
+                let m = (v >> 3) as i64;
+                deltas.push(match v & 7 {
+                    0 => (m, 0),
+                    1 => (0, m),
+                    2 => (-m, 0),
+                    3 => (0, -m),
+                    4 => (m, m),
+                    5 => (-m, m),
+                    6 => (-m, -m),
+                    _ => (m, -m),
+                });
+            }
+        }
+        4 => {
+            for _ in 0..count {
+                deltas.push(read_gdelta(b, i)?);
+            }
+        }
+        t => return Err(OasisError(format!("point-list type {t} not supported in v0"))),
+    }
+    Ok(deltas)
+}
+
+/// PATH record → an open centre-line polyline with a width (`Element::Path`). The
+/// per-end extension scheme is parsed (to stay byte-aligned) but not modeled — our
+/// consumers use the centre-line and width; ends are stroked flush.
+#[allow(clippy::too_many_arguments)]
+fn read_path(
+    b: &[u8],
+    i: &mut usize,
+    m_layer: &mut i16,
+    m_datatype: &mut i16,
+    m_halfwidth: &mut i64,
+    m_x: &mut i32,
+    m_y: &mut i32,
+) -> Result<Element, OasisError> {
+    let info = rb(b, i)?;
+    let (e, w, p, x, y, r, d, l) = (
+        info & 0x80 != 0, info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0,
+        info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    if l {
+        *m_layer = ru(b, i)? as i16;
+    }
+    if d {
+        *m_datatype = ru(b, i)? as i16;
+    }
+    if w {
+        *m_halfwidth = ru(b, i)? as i64;
+    }
+    if e {
+        // extension-scheme byte: bits 2-3 start, bits 0-1 end; 3 = explicit signed-int
+        let ext = rb(b, i)?;
+        if (ext >> 2) & 3 == 3 {
+            rs(b, i)?;
+        }
+        if ext & 3 == 3 {
+            rs(b, i)?;
+        }
+    }
+    let deltas = if p { read_point_list(b, i, false)? } else { Vec::new() };
+    if x {
+        *m_x = rs(b, i)? as i32;
+    }
+    if y {
+        *m_y = rs(b, i)? as i32;
+    }
+    if r {
+        return Err(OasisError("path repetition not supported in v0".into()));
+    }
+    let mut pts = Vec::with_capacity(deltas.len() + 1);
+    let (mut cx, mut cy) = (*m_x as i64, *m_y as i64);
+    pts.push((cx as i32, cy as i32));
+    for (dx, dy) in &deltas {
+        cx += dx;
+        cy += dy;
+        pts.push((cx as i32, cy as i32));
+    }
+    Ok(Element::Path { layer: *m_layer, datatype: *m_datatype, width: (2 * *m_halfwidth) as i32, pts })
+}
+
+/// TEXT record → a label (`Element::Text`). The string is inline (n-string) or a
+/// reference into the TEXTSTRING table. Uses text-specific modal state so it never
+/// perturbs the geometry modal layer/position.
+#[allow(clippy::too_many_arguments)]
+fn read_text(
+    b: &[u8],
+    i: &mut usize,
+    textstrings: &[String],
+    m_string: &mut String,
+    m_layer: &mut i16,
+    m_type: &mut i16,
+    m_x: &mut i32,
+    m_y: &mut i32,
+) -> Result<Element, OasisError> {
+    let info = rb(b, i)?;
+    let (c, n, x, y, r, t, l) = (
+        info & 0x40 != 0, info & 0x20 != 0, info & 0x10 != 0, info & 0x08 != 0,
+        info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    if c {
+        *m_string = if n {
+            let rn = ru(b, i)? as usize;
+            textstrings.get(rn).cloned().unwrap_or_default()
+        } else {
+            rstr(b, i)?
+        };
+    }
+    if l {
+        *m_layer = ru(b, i)? as i16;
+    }
+    if t {
+        *m_type = ru(b, i)? as i16;
+    }
+    if x {
+        *m_x = rs(b, i)? as i32;
+    }
+    if y {
+        *m_y = rs(b, i)? as i32;
+    }
+    if r {
+        return Err(OasisError("text repetition not supported in v0".into()));
+    }
+    Ok(Element::Text { layer: *m_layer, texttype: *m_type, x: *m_x, y: *m_y, string: m_string.clone() })
 }
 
 fn read_placement(
@@ -787,5 +1017,24 @@ mod tests {
     #[test]
     fn magic_is_checked() {
         assert!(parse(b"not-oasis").is_err());
+    }
+
+    #[test]
+    fn manhattan_polygon_implied_closure() {
+        // point-list: type 0 (manhattan, horizontal-first), count 4, stored deltas
+        // +40, +20, -20, +20 — the L-shape's edges minus the implied last delta.
+        // signed-int encoding: +40=0x50, +20=0x28, -20=0x29.
+        let bytes = [0u8, 4, 0x50, 0x28, 0x29, 0x28];
+
+        // closed (POLYGON): the implied (-sum_h, 0) = (-20, 0) is synthesized, so the
+        // corner is preserved (area 1200, not the corner-cut 800).
+        let mut i = 0;
+        let closed = read_point_list(&bytes, &mut i, true).unwrap();
+        assert_eq!(closed, [(40, 0), (0, 20), (-20, 0), (0, 20), (-20, 0)]);
+
+        // open (PATH): only the 4 stored deltas, no implied vertex.
+        let mut j = 0;
+        let open = read_point_list(&bytes, &mut j, false).unwrap();
+        assert_eq!(open, [(40, 0), (0, 20), (-20, 0), (0, 20)]);
     }
 }

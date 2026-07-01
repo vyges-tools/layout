@@ -9,7 +9,8 @@ Rust, std-only**, so the Vyges layout tools share one auditable base.
 | Capability | vyges-layout v0 | KLayout-db / gdstk |
 | --- | --- | --- |
 | GDSII read/write (round-trip) | ✅ BOUNDARY/PATH/SREF/AREF/BOX | ✅ full |
-| OASIS read/write | ✅ RECTANGLE/POLYGON/PLACEMENT subset (GDS↔OASIS convert) | ✅ full |
+| OASIS write | ✅ RECTANGLE/POLYGON/PLACEMENT subset (GDS↔OASIS convert) | ✅ full |
+| OASIS read (third-party) | ◐ RECTANGLE/POLYGON(+manhattan implied-closure)/PATH/TEXT/PLACEMENT — validated on a real sky130 corpus (gdstk); depth: TRAPEZOID/PROPERTY/repetition/strict tables/CBLOCK | ✅ full |
 | Per-layer stats (`info`) | ✅ | ✅ |
 | Boolean AND/OR/NOT/XOR | ✅ Manhattan rectilinear polygons (scanline) | ✅ general polygons (Vatti/edge) |
 | Hierarchy flatten | ✅ SREF/AREF, composed transforms | ✅ |

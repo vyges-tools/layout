@@ -11,7 +11,10 @@
 //! not products; this is the clean-room Rust one.
 //!
 //! v0 scope: a GDSII reader/writer (round-trip), an **OASIS reader/writer** (the
-//! compact modern interchange format — RECTANGLE / POLYGON / PLACEMENT subset),
+//! compact modern interchange format — the reader ingests RECTANGLE / POLYGON
+//! (incl. manhattan implied-closure) / PATH / TEXT / PLACEMENT, validated against a
+//! real third-party sky130 corpus; the writer emits the RECTANGLE/POLYGON/PLACEMENT
+//! subset),
 //! per-layer stats (`info`), hierarchy flatten (SREF; AREF arrays), and **Manhattan
 //! boolean** (AND/OR/NOT/XOR) on axis-aligned rectangles via a scanline, and a
 //! **spatial index** (`index`) for region/overlap/spacing-halo queries. Depth

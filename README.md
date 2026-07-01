@@ -94,7 +94,13 @@ geometry (a diagonal edge) is bbox-approximated and **counted** (never silently
 dropped). General clipping (Vatti) is the depth pass. Arbitrary reference angles round
 to integer DBU. **OASIS** read/write covers the RECTANGLE / POLYGON / PLACEMENT subset
 this kernel emits (`Path` is stroked to rectangles; `Text` labels are not written; no
-CBLOCK compression) — full third-party OASIS ingest is a depth pass. The `RegionIndex`
+CBLOCK compression). The **reader** goes further than the writer — it ingests
+RECTANGLE / POLYGON (including the manhattan implied-closure real writers use) / PATH /
+TEXT / PLACEMENT, **validated against a real third-party corpus**: the sky130 standard-
+cell GDS converted to OASIS by `gdstk` reads back **per-layer-identical** to the GDS
+through both readers. Remaining third-party-ingest depth (surfaced by that corpus):
+TRAPEZOID / CTRAPEZOID, PROPERTY, repetitions, strict end-of-file name tables, and
+CBLOCK (DEFLATE) decompression. The `RegionIndex`
 spatial index provides region/overlap/spacing-halo queries; **DRC width/spacing rules**
 on top of it, rectangle sizing, and **net tracing for device extraction** (the piece
 `vyges-lvs` Phase 2 consumes) are reserved.
