@@ -32,6 +32,8 @@ vyges-layout info    block.gds                 # cells, layers, areas, bbox
 vyges-layout info    block.gds --json
 vyges-layout boolean block.gds --top top --op and --a 67/20 --b 68/20 --out 100/0 -o and.gds
 vyges-layout flatten block.gds --top top -o flat.gds
+vyges-layout flatten block.gds --top top -o flat.oas   # write OASIS (GDS→OASIS convert)
+vyges-layout info    block.oas                          # …and read it back
 vyges-layout demo                              # built-in, no files
 # `L/D` is layer/datatype; boolean ops: and · or · not (A−B) · xor
 # common flags: -o FILE · --json · -q/--quiet · -v/--verbose · -h/--help · -V/--version
@@ -68,6 +70,11 @@ domain; the analog shapes above are rectilinear and handled exactly.
 
 - **GDSII read/write** — round-trips a library (BOUNDARY/PATH/SREF/AREF/BOX; the GDS
   real format for units). This replaces the vendored JS GDS parser in the chip viewer.
+- **OASIS read/write** — the compact, modern layout interchange format (typically an
+  order of magnitude smaller than the equivalent GDSII). Reads/writes the RECTANGLE /
+  POLYGON / PLACEMENT subset onto the same in-memory model, so `info`, `boolean`, and
+  `flatten` work on either format — and the tools double as a **GDS↔OASIS converter**
+  (format picked by file extension: `.gds` vs `.oas`/`.oasis`).
 - **`info`** — cells, per-cell element counts, layers present, per-layer boundary count
   and area, in text or JSON.
 - **boolean** — AND / OR / NOT / XOR between two layers via a vertical **scanline** on
@@ -81,9 +88,11 @@ rectilinear polygon exactly, but the result is returned as a set of rectangles t
 the region (contour-tracing into merged polygons is depth), and **general-angle**
 geometry (a diagonal edge) is bbox-approximated and **counted** (never silently
 dropped). General clipping (Vatti) is the depth pass. Arbitrary reference angles round
-to integer DBU. Reserved: OASIS,
-sizing + region queries (DRC width/spacing), and **net tracing for device extraction**
-(the piece `vyges-lvs` Phase 2 consumes).
+to integer DBU. **OASIS** read/write covers the RECTANGLE / POLYGON / PLACEMENT subset
+this kernel emits (`Path` is stroked to rectangles; `Text` labels are not written; no
+CBLOCK compression) — full third-party OASIS ingest is a depth pass. Reserved: sizing +
+region queries (DRC width/spacing), and **net tracing for device extraction** (the piece
+`vyges-lvs` Phase 2 consumes).
 
 ## License
 
@@ -92,5 +101,6 @@ libraries, not products; this is the Rust one.
 
 ## Current state (v0)
 
-GDSII read/write, `info`, Manhattan boolean (and/or/not/xor), and hierarchy flatten;
-text + JSON; runnable example. Pure std, unit + example tested offline, no subprocess.
+GDSII **and OASIS** read/write (GDS↔OASIS convert), `info`, Manhattan boolean
+(and/or/not/xor), and hierarchy flatten; text + JSON; runnable example. Pure std,
+unit + example tested offline, no subprocess.

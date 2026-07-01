@@ -9,12 +9,12 @@ Rust, std-only**, so the Vyges layout tools share one auditable base.
 | Capability | vyges-layout v0 | KLayout-db / gdstk |
 | --- | --- | --- |
 | GDSII read/write (round-trip) | ✅ BOUNDARY/PATH/SREF/AREF/BOX | ✅ full |
+| OASIS read/write | ✅ RECTANGLE/POLYGON/PLACEMENT subset (GDS↔OASIS convert) | ✅ full |
 | Per-layer stats (`info`) | ✅ | ✅ |
 | Boolean AND/OR/NOT/XOR | ✅ Manhattan rectilinear polygons (scanline) | ✅ general polygons (Vatti/edge) |
 | Hierarchy flatten | ✅ SREF/AREF, composed transforms | ✅ |
 | Sizing / region (DRC width·spacing) | ❌ (depth) | ✅ |
 | Net tracing / device extraction | ❌ Phase 2 (the `vyges-lvs` seam) | ◐ (KLayout LVS) |
-| OASIS | ❌ (depth) | ✅ |
 
 ## Boolean: the Manhattan scanline (v0)
 
@@ -30,7 +30,10 @@ boundary is bbox-approximated and **counted** in the report (no silent caps).
 2. **General-angle clipping** (Vatti / Greiner-Hormann) for non-Manhattan geometry.
 3. **Sizing + region queries** (grow/shrink, width/spacing) → DRC primitives.
 4. **Net tracing + device recognition** → the `vyges-lvs` Phase-2 extraction seam.
-5. **OASIS** read/write; per-layer render hooks for the chip viewer.
+5. **Full third-party OASIS ingest** (TRAPEZOID/CTRAPEZOID/PATH/CBLOCK/properties, modal
+   compaction, matrix repetitions) on top of the v0 RECTANGLE/POLYGON/PLACEMENT subset;
+   per-layer render hooks for the chip viewer.
 
-Honest bound: v0 is a real GDSII kernel with exact Manhattan boolean and flatten — a
-solid base for the layout tools — with general geometry and extraction on the path above.
+Honest bound: v0 is a real GDSII **and OASIS** kernel with exact Manhattan boolean and
+flatten — a solid base for the layout tools — with general geometry, full OASIS ingest,
+and extraction on the path above.

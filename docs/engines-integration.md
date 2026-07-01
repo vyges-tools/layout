@@ -4,10 +4,14 @@
 layout-side tools build on.
 
 ```text
-                         ┌───────────────► vyges-lvs (Phase 2): GDS → devices + nets
-   GDSII ─► vyges-layout ┼───────────────► DRC (width/spacing), metal fill  [future]
-   (read/boolean/flatten)└───────────────► chip viewer: GDS parse for the web map
+                          ┌───────────────► vyges-lvs (Phase 2): GDS → devices + nets
+   GDSII  ─► vyges-layout ┼───────────────► DRC (width/spacing), metal fill  [future]
+   OASIS  ◄─(read/boolean/└───────────────► chip viewer: GDS parse for the web map
+             flatten/convert)
 ```
+
+Input and output are **GDSII or OASIS** (picked by file extension), so the kernel also
+serves as a GDS↔OASIS converter for the rest of the flow.
 
 ## What it unblocks
 

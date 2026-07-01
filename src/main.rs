@@ -1,8 +1,8 @@
 //! vyges-layout CLI.
 //!
-//!   vyges-layout info    GDS [--json]
-//!   vyges-layout boolean GDS --op and|or|not|xor --a L/D --b L/D --out L/D -o OUT.gds [--top C]
-//!   vyges-layout flatten GDS --top CELL -o OUT.gds
+//!   vyges-layout info    LAYOUT [--json]           (LAYOUT = .gds | .oas/.oasis)
+//!   vyges-layout boolean LAYOUT --op and|or|not|xor --a L/D --b L/D --out L/D -o OUT [--top C]
+//!   vyges-layout flatten LAYOUT --top CELL -o OUT
 //!   vyges-layout demo
 //!
 //! Common flags: -h/--help, -V/--version, -q/--quiet, -v/--verbose.
@@ -15,16 +15,18 @@ use vyges_layout::engine;
 use vyges_layout::gds::Library;
 
 const USAGE: &str = "\
-vyges-layout — layout geometry kernel (GDSII read/write, boolean ops, flatten)
+vyges-layout — layout geometry kernel (GDSII + OASIS read/write, boolean ops, flatten)
 
 usage:
-  vyges-layout info    GDS [--json]
-  vyges-layout boolean GDS --op and|or|not|xor --a L/D --b L/D --out L/D -o OUT.gds [--top C]
-  vyges-layout flatten GDS --top CELL -o OUT.gds
+  vyges-layout info    LAYOUT [--json]
+  vyges-layout boolean LAYOUT --op and|or|not|xor --a L/D --b L/D --out L/D -o OUT [--top C]
+  vyges-layout flatten LAYOUT --top CELL -o OUT
   vyges-layout demo
 
-`L/D` is layer/datatype, e.g. 68/20. `boolean` operates on one cell's own shapes
-(flatten first for hierarchy); v0 boolean is Manhattan (axis-aligned rectangles).
+LAYOUT / OUT may be GDSII (.gds) or OASIS (.oas/.oasis) — the format is picked by
+extension, so the tools double as a GDS↔OASIS converter. `L/D` is layer/datatype,
+e.g. 68/20. `boolean` operates on one cell's own shapes (flatten first for
+hierarchy); v0 boolean is Manhattan (axis-aligned rectangles).
 
 flags:
   --op OP        and | or | not (A−B) | xor
@@ -121,7 +123,7 @@ fn main() {
                 eprintln!("usage: vyges-layout info GDS");
                 exit(2);
             };
-            let lib = match Library::load(path) {
+            let lib = match Library::load_any(path) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("error: {e}");

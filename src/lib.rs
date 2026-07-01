@@ -10,13 +10,16 @@
 //! std, unit-tested offline — no subprocess. Peers are libraries (KLayout-db, gdstk),
 //! not products; this is the clean-room Rust one.
 //!
-//! v0 scope: a GDSII reader/writer (round-trip), per-layer stats (`info`), hierarchy
-//! flatten (SREF; AREF arrays), and **Manhattan boolean** (AND/OR/NOT/XOR) on
-//! axis-aligned rectangles via a scanline. Depth reserved: rectilinear-polygon
-//! decomposition + general-angle clipping (Vatti), OASIS, sizing/region (DRC width
-//! & spacing), and net tracing for extraction.
+//! v0 scope: a GDSII reader/writer (round-trip), an **OASIS reader/writer** (the
+//! compact modern interchange format — RECTANGLE / POLYGON / PLACEMENT subset),
+//! per-layer stats (`info`), hierarchy flatten (SREF; AREF arrays), and **Manhattan
+//! boolean** (AND/OR/NOT/XOR) on axis-aligned rectangles via a scanline. Depth
+//! reserved: rectilinear-polygon decomposition + general-angle clipping (Vatti),
+//! full third-party OASIS ingest, sizing/region (DRC width & spacing), and net
+//! tracing for extraction.
 
 pub mod gds;
+pub mod oasis;
 pub mod geom;
 pub mod boolean;
 pub mod flatten;

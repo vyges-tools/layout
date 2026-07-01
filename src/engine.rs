@@ -76,7 +76,7 @@ pub fn run_boolean(
     op: Op,
     out_path: &str,
 ) -> Result<BoolSummary, String> {
-    let lib = Library::load(in_path).map_err(|e| e.to_string())?;
+    let lib = Library::load_any(in_path)?;
     let cell = pick(&lib, top)?;
     let (pa, aa) = polys_on(cell, a.0, a.1);
     let (pb, ab) = polys_on(cell, b.0, b.1);
@@ -89,16 +89,16 @@ pub fn run_boolean(
         oc.elements.push(Element::Boundary { layer: out_ld.0, datatype: out_ld.1, pts: r.as_boundary() });
     }
     let olib = Library { name: lib.name.clone(), user_unit: lib.user_unit, db_unit: lib.db_unit, cells: vec![oc] };
-    olib.save(out_path).map_err(|e| e.to_string())?;
+    olib.save_any(out_path)?;
     Ok(BoolSummary { a: ra, b: rb, out: res.len(), out_area, approx: aa + ab })
 }
 
 pub fn run_flatten(in_path: &str, top: &str, out_path: &str) -> Result<usize, String> {
-    let lib = Library::load(in_path).map_err(|e| e.to_string())?;
+    let lib = Library::load_any(in_path)?;
     let flat = flatten::flatten(&lib, top)?;
     let n = flat.elements.len();
     let olib = Library { name: lib.name.clone(), user_unit: lib.user_unit, db_unit: lib.db_unit, cells: vec![flat] };
-    olib.save(out_path).map_err(|e| e.to_string())?;
+    olib.save_any(out_path)?;
     Ok(n)
 }
 
