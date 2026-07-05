@@ -1,8 +1,8 @@
 # vyges-layout
 
-A memory-safe Rust **layout geometry kernel**: read/write **GDSII**, do **polygon
-boolean** operations, and **flatten** a cell hierarchy — the substrate the other
-layout-side tools ride on.
+A memory-safe Rust **layout geometry kernel**: read/write **GDSII** and **OASIS**, do
+**polygon boolean** operations, and **flatten** a cell hierarchy — the substrate the
+other layout-side tools ride on.
 
 > **Vyges open EDA tools.** Commercial-grade silicon capability, built on open
 > standards and plain file formats — accessible to everyone. `vyges-layout` is the
