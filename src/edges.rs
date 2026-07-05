@@ -219,6 +219,67 @@ pub fn edges_not(a: &[Edge], b: &[Edge]) -> Vec<Edge> {
     out
 }
 
+// ---- edge separation --------------------------------------------------------
+//
+// `separation` is the directional edge-to-edge spacing check: which edges of `a` face an
+// edge of `b` across empty space, closer than a distance. It underlies advanced-node
+// tip-to-side / tip-to-tip spacing rules once edges are classified by length.
+
+/// Outward normal of a directed edge (right of travel; the solid is on the left, as
+/// `ring_edges` produces, so the normal points into the empty space).
+fn outward(e: &Edge) -> (i64, i64) {
+    let dx = (e.b.0 - e.a.0).signum() as i64;
+    let dy = (e.b.1 - e.a.1).signum() as i64;
+    (dy, -dx)
+}
+
+/// Edge pairs `(ea in a, eb in b)` that are **parallel**, **face** each other (outward
+/// normals point toward one another across empty space), **overlap in projection**, and are
+/// a perpendicular gap in `(0, dist)` apart. The facing test assumes both inputs are
+/// oriented with the solid on the left (as [`ring_edges`] yields). For same-set spacing
+/// (`a == b`) each unordered pair is produced twice — dedupe on the caller side.
+pub fn separation(a: &[Edge], b: &[Edge], dist: i64) -> Vec<(Edge, Edge)> {
+    let mut out = Vec::new();
+    for ea in a {
+        for eb in b {
+            let ha = ea.axis() == Axis::Horizontal;
+            if ha != (eb.axis() == Axis::Horizontal) {
+                continue; // not parallel
+            }
+            if ha {
+                let (ya, yb) = (ea.a.1 as i64, eb.a.1 as i64);
+                let gap = (ya - yb).abs();
+                if gap == 0 || gap >= dist {
+                    continue;
+                }
+                let (xa0, xa1) = (ea.a.0.min(ea.b.0), ea.a.0.max(ea.b.0));
+                let (xb0, xb1) = (eb.a.0.min(eb.b.0), eb.a.0.max(eb.b.0));
+                if !(xa1 >= xb0 && xb1 >= xa0) {
+                    continue; // no projection overlap
+                }
+                if outward(ea).1 * (yb - ya) > 0 && outward(eb).1 * (ya - yb) > 0 {
+                    out.push((*ea, *eb));
+                }
+            } else {
+                let (xa, xb) = (ea.a.0 as i64, eb.a.0 as i64);
+                let gap = (xa - xb).abs();
+                if gap == 0 || gap >= dist {
+                    continue;
+                }
+                let (ya0, ya1) = (ea.a.1.min(ea.b.1), ea.a.1.max(ea.b.1));
+                let (yb0, yb1) = (eb.a.1.min(eb.b.1), eb.a.1.max(eb.b.1));
+                if !(ya1 >= yb0 && yb1 >= ya0) {
+                    continue;
+                }
+                if outward(ea).0 * (xb - xa) > 0 && outward(eb).0 * (xa - xb) > 0 {
+                    out.push((*ea, *eb));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +398,20 @@ mod tests {
         let total: i64 = via.iter().map(|e| e.len()).sum();
         let off_len: i64 = off.iter().map(|e| e.len()).sum();
         assert_eq!(off_len, total - 6);
+    }
+
+    #[test]
+    fn separation_finds_only_the_facing_gap() {
+        use crate::contour::trace_contours;
+        let a = ring_edges(&trace_contours(&[Rect { x0: 0, y0: 0, x1: 10, y1: 10 }])[0]);
+        // B is 4 dbu to the right of A (A right edge x=10, B left edge x=14)
+        let b = ring_edges(&trace_contours(&[Rect { x0: 14, y0: 0, x1: 24, y1: 10 }])[0]);
+        let pairs = separation(&a, &b, 5);
+        assert_eq!(pairs.len(), 1, "only A's right edge faces B's left edge across the 4-gap");
+        // gap == dist is not a violation
+        assert!(separation(&a, &b, 4).is_empty());
+        // far apart: nothing
+        let c = ring_edges(&trace_contours(&[Rect { x0: 100, y0: 0, x1: 110, y1: 10 }])[0]);
+        assert!(separation(&a, &c, 5).is_empty());
     }
 }
