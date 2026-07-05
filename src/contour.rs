@@ -65,21 +65,37 @@ pub fn trace_contours(rects: &[Rect]) -> Vec<Vec<(i32, i32)>> {
     }
 
     // --- 2. split every segment at all vertices, then stitch ------------------
-    let mut verts: Vec<(i32, i32)> = edges.iter().flat_map(|e| [e[0], e[1]]).collect();
-    verts.sort_unstable();
-    verts.dedup();
+    // Index every boundary vertex by its supporting line once, so splitting a
+    // maximal segment binary-searches only its own line's vertices (O(log N) per
+    // segment) instead of filtering the global vertex list (O(N) per segment).
+    let mut col_ys: HashMap<i32, Vec<i32>> = HashMap::new(); // x -> sorted, deduped ys
+    let mut row_xs: HashMap<i32, Vec<i32>> = HashMap::new(); // y -> sorted, deduped xs
+    for e in &edges {
+        for &(vx, vy) in e.iter() {
+            col_ys.entry(vx).or_default().push(vy);
+            row_xs.entry(vy).or_default().push(vx);
+        }
+    }
+    for ys in col_ys.values_mut() {
+        ys.sort_unstable();
+        ys.dedup();
+    }
+    for xs in row_xs.values_mut() {
+        xs.sort_unstable();
+        xs.dedup();
+    }
 
     let mut units: Vec<[(i32, i32); 2]> = Vec::new();
     for e in &edges {
         let (a, b) = (e[0], e[1]);
         if a.0 == b.0 {
-            // vertical: collect vertices on this column between a.y and b.y
+            // vertical: vertices on this column within [lo, hi] (binary-searched range)
             let x = a.0;
             let (lo, hi) = (a.1.min(b.1), a.1.max(b.1));
-            let mut ys: Vec<i32> =
-                verts.iter().filter(|&&(vx, vy)| vx == x && vy >= lo && vy <= hi).map(|&(_, vy)| vy).collect();
-            ys.sort_unstable();
-            ys.dedup();
+            let col = &col_ys[&x];
+            let i0 = col.partition_point(|&vy| vy < lo);
+            let i1 = col.partition_point(|&vy| vy <= hi);
+            let ys = &col[i0..i1];
             let going_up = b.1 > a.1;
             for w in ys.windows(2) {
                 if going_up {
@@ -91,10 +107,10 @@ pub fn trace_contours(rects: &[Rect]) -> Vec<Vec<(i32, i32)>> {
         } else {
             let y = a.1;
             let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
-            let mut xs: Vec<i32> =
-                verts.iter().filter(|&&(vx, vy)| vy == y && vx >= lo && vx <= hi).map(|&(vx, _)| vx).collect();
-            xs.sort_unstable();
-            xs.dedup();
+            let row = &row_xs[&y];
+            let i0 = row.partition_point(|&vx| vx < lo);
+            let i1 = row.partition_point(|&vx| vx <= hi);
+            let xs = &row[i0..i1];
             let going_right = b.0 > a.0;
             for w in xs.windows(2) {
                 if going_right {

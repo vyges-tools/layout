@@ -11,7 +11,7 @@
 //! Depth reserved: general-angle clipping (Vatti) and contour-tracing the output
 //! rectangles back into merged polygons (the result is currently a set of rectangles).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::geom::Rect;
 
@@ -79,57 +79,99 @@ fn signed_area2(pts: &[(i32, i32)]) -> i64 {
     a
 }
 
-/// y-intervals covered by the region (accumulated sign > 0) for the slab starting at xl.
-fn covered_y(edges: &[VEdge], xl: i32) -> Vec<(i32, i32)> {
-    // events from every edge whose x has been crossed (x <= xl)
-    let mut ev: Vec<(i32, i32)> = Vec::new(); // (y, delta)
-    for e in edges.iter().filter(|e| e.x <= xl) {
-        ev.push((e.ylo, e.sign));
-        ev.push((e.yhi, -e.sign));
+/// Signed y-coverage of one region, maintained incrementally across the x-sweep.
+///
+/// Keyed on y, each entry is the running `sum(sign)` delta at that y-boundary; a
+/// vertical edge crossed at the current x applies `+sign` at `ylo` and `-sign` at
+/// `yhi`. The region covers the y-ranges where the accumulated count is > 0.
+/// Entries that net to zero are pruned so the map holds only *active* boundaries —
+/// walking it to read off covered intervals is then O(active), not O(all edges).
+#[derive(Default)]
+struct Coverage {
+    delta: std::collections::BTreeMap<i32, i32>,
+}
+
+impl Coverage {
+    /// Apply one vertical edge's contribution (permanent as x moves right).
+    fn apply(&mut self, ylo: i32, yhi: i32, sign: i32) {
+        Self::bump(&mut self.delta, ylo, sign);
+        Self::bump(&mut self.delta, yhi, -sign);
     }
-    ev.sort();
-    let mut out: Vec<(i32, i32)> = Vec::new();
-    let mut count = 0i32;
-    let mut start = 0i32;
-    let mut i = 0;
-    while i < ev.len() {
-        let y = ev[i].0;
-        let prev = count;
-        while i < ev.len() && ev[i].0 == y {
-            count += ev[i].1;
-            i += 1;
+
+    fn bump(delta: &mut std::collections::BTreeMap<i32, i32>, y: i32, d: i32) {
+        let e = delta.entry(y).or_insert(0);
+        *e += d;
+        if *e == 0 {
+            delta.remove(&y);
         }
-        if prev <= 0 && count > 0 {
-            start = y;
-        } else if prev > 0 && count <= 0 {
-            if y > start {
+    }
+
+    /// Maximal y-intervals where the accumulated count is > 0.
+    fn intervals(&self) -> Vec<(i32, i32)> {
+        let mut out: Vec<(i32, i32)> = Vec::new();
+        let mut count = 0i32;
+        let mut start = 0i32;
+        for (&y, &d) in &self.delta {
+            let prev = count;
+            count += d;
+            if prev <= 0 && count > 0 {
+                start = y;
+            } else if prev > 0 && count <= 0 && y > start {
                 out.push((start, y));
             }
         }
+        out
     }
-    out
 }
 
 /// Boolean on rectilinear polygons → result as rectangles tiling the region.
+///
+/// Active-interval plane sweep: sweep x left→right over the sorted unique edge
+/// x-coords, maintaining each region's running y-coverage incrementally. At each x
+/// we fold in only the edges *at that x* (O(log N) each) and read off the covered
+/// intervals in O(active); the op is applied on those interval sets exactly as
+/// before. O((N + K) log N) overall vs. the former O(N²) per-slab recompute.
 pub fn boolean_poly(a: &[Vec<(i32, i32)>], b: &[Vec<(i32, i32)>], op: Op) -> Vec<Rect> {
     let ea = edges(a);
     let eb = edges(b);
+    // Bucket each region's edges by x, and collect the sorted unique slab boundaries.
+    let mut ea_by_x: BTreeMap<i32, Vec<&VEdge>> = BTreeMap::new();
+    let mut eb_by_x: BTreeMap<i32, Vec<&VEdge>> = BTreeMap::new();
     let mut xs: BTreeSet<i32> = BTreeSet::new();
-    for e in ea.iter().chain(eb.iter()) {
+    for e in &ea {
+        ea_by_x.entry(e.x).or_default().push(e);
+        xs.insert(e.x);
+    }
+    for e in &eb {
+        eb_by_x.entry(e.x).or_default().push(e);
         xs.insert(e.x);
     }
     let xs: Vec<i32> = xs.into_iter().collect();
     if xs.len() < 2 {
         return vec![];
     }
+    let mut cov_a = Coverage::default();
+    let mut cov_b = Coverage::default();
     let mut out: Vec<Rect> = Vec::new();
     for w in xs.windows(2) {
         let (xl, xr) = (w[0], w[1]);
+        // Fold in every edge at xl before reading the slab [xl, xr) coverage — the
+        // coverage during a slab reflects all edges with x <= xl.
+        if let Some(es) = ea_by_x.get(&xl) {
+            for e in es {
+                cov_a.apply(e.ylo, e.yhi, e.sign);
+            }
+        }
+        if let Some(es) = eb_by_x.get(&xl) {
+            for e in es {
+                cov_b.apply(e.ylo, e.yhi, e.sign);
+            }
+        }
         if xl == xr {
             continue;
         }
-        let ia = covered_y(&ea, xl);
-        let ib = covered_y(&eb, xl);
+        let ia = cov_a.intervals();
+        let ib = cov_b.intervals();
         let ir = match op {
             Op::And => intersect(&ia, &ib),
             Op::Or => union(&ia, &ib),
