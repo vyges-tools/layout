@@ -29,6 +29,9 @@ pub mod oasis;
 // layout-side engines keep using `vyges_layout::geom` / `::index` unchanged.
 pub use vyges_geom::{geom, index};
 pub mod boolean;
+pub mod contour;
+pub mod edges;
+pub mod sizing;
 pub mod flatten;
 pub mod engine;
 
