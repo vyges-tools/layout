@@ -20,11 +20,15 @@ Rust, std-only**, so the Vyges layout tools share one auditable base.
 
 ## Boolean: the Manhattan scanline (v0)
 
-The boolean runs a **vertical scanline**: for each x-slab between consecutive rectangle
-edges, the y-coverage of A and of B is an interval set; the op is applied on those
-intervals and emitted as rectangles, then merged horizontally across slabs. Integer
-coordinates make it exact. v0 inputs are axis-aligned rectangles; a non-rectangle
-boundary is bbox-approximated and **counted** in the report (no silent caps).
+The boolean runs a **vertical scanline**: sweeping x left→right, the y-coverage of A and
+of B is maintained **incrementally** — each edge is folded into a running interval set as
+its x is crossed, rather than recomputed from all edges per slab — and between consecutive
+edges the op is applied on those intervals and emitted as rectangles, then merged
+horizontally. That makes it O((N+K) log N), so it holds at full-chip shape counts (10⁵+
+per layer) rather than the O(N²) of a per-slab recompute. The companion boundary tracer
+(`trace_contours`, tiles → merged oriented polygons) indexes vertices per supporting line
+for the same reason. Integer coordinates make both exact; a non-rectilinear boundary is
+bbox-approximated and **counted** in the report (no silent caps).
 
 ## Depth pass
 
