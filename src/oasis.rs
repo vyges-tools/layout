@@ -49,6 +49,8 @@ const R_PROPERTY: u64 = 28;
 const R_PROPERTY_REPEAT: u64 = 29;
 const R_XNAME_IMPLICIT: u64 = 30;
 const R_XNAME_EXPLICIT: u64 = 31;
+const R_XELEMENT: u64 = 32;
+const R_XGEOMETRY: u64 = 33;
 const R_CBLOCK: u64 = 34;
 const R_CELL_REF: u64 = 13;
 const R_CELL_NAME: u64 = 14;
@@ -336,8 +338,12 @@ struct ParseState {
     m_halfwidth: i64,
     m_geom_w: i64,
     m_geom_h: i64,
+    m_geom_ctype: u64,
     m_x: i32,
     m_y: i32,
+    // XYRELATIVE (record 16) makes a record's x/y deltas off the modal position;
+    // XYABSOLUTE (15) makes them absolute. Default absolute.
+    m_xy_relative: bool,
     // text-specific modal state (never perturbs geometry)
     m_textlayer: i16,
     m_texttype: i16,
@@ -346,6 +352,9 @@ struct ParseState {
     m_textstring: String,
     // last repetition (modal, reused by repetition-type 0)
     m_repetition: Vec<(i32, i32)>,
+    // modal point-lists, reused when a POLYGON/PATH omits its own (P bit clear)
+    m_poly_pts: Vec<(i64, i64)>,
+    m_path_pts: Vec<(i64, i64)>,
     ended: bool,
 }
 
@@ -355,6 +364,21 @@ impl ParseState {
             self.lib.cells.push(c);
             self.refnums.push(self.cur_refnum.take());
         }
+        // Position-related modals reset at each cell boundary (OASIS spec): the
+        // placement position and the absolute/relative mode. The dimension modals
+        // (width, height, ctrapezoid-type, half-width, point-lists, repetition) persist
+        // and are only overwritten when a record supplies its own.
+        self.m_x = 0;
+        self.m_y = 0;
+        self.m_xy_relative = false;
+    }
+
+    /// Apply a record's x/y field honouring the modal XYABSOLUTE/XYRELATIVE mode.
+    fn set_mx(&mut self, v: i32) {
+        self.m_x = if self.m_xy_relative { self.m_x.wrapping_add(v) } else { v };
+    }
+    fn set_my(&mut self, v: i32) {
+        self.m_y = if self.m_xy_relative { self.m_y.wrapping_add(v) } else { v };
     }
 
     fn push_el(&mut self, el: Element) {
@@ -441,7 +465,8 @@ impl ParseState {
                     let name = rstr(b, &mut i)?;
                     self.cell = Some(Cell { name, elements: Vec::new() });
                 }
-                R_XYABSOLUTE | R_XYRELATIVE => { /* only absolute geometry is emitted */ }
+                R_XYABSOLUTE => self.m_xy_relative = false,
+                R_XYRELATIVE => self.m_xy_relative = true,
                 R_RECTANGLE => {
                     let (el, reps) = read_rectangle(b, &mut i, self)?;
                     self.push_repeated(el, &reps);
@@ -477,6 +502,11 @@ impl ParseState {
                     }
                 }
                 R_PROPERTY | R_PROPERTY_REPEAT => skip_property(b, &mut i, id)?,
+                R_XELEMENT => {
+                    ru(b, &mut i)?; // xelement-attribute
+                    rstr(b, &mut i)?; // xelement-string
+                }
+                R_XGEOMETRY => skip_xgeometry(b, &mut i, self)?,
                 R_CBLOCK => {
                     let comp_type = ru(b, &mut i)?;
                     let _uncomp_len = ru(b, &mut i)?;
@@ -575,10 +605,10 @@ fn read_rectangle(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
         st.m_geom_h = st.m_geom_w; // square: height mirrors width
     }
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let rect = Rect::new(st.m_x, st.m_y, st.m_x + st.m_geom_w as i32, st.m_y + st.m_geom_h as i32);
@@ -597,12 +627,18 @@ fn read_polygon(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     if d {
         st.m_datatype = ru(b, i)? as i16;
     }
-    let deltas: Vec<(i64, i64)> = if p { read_point_list(b, i, true)? } else { Vec::new() };
+    let deltas: Vec<(i64, i64)> = if p {
+        let d = read_point_list(b, i, true)?;
+        st.m_poly_pts = d.clone();
+        d
+    } else {
+        st.m_poly_pts.clone() // reuse the modal polygon point-list
+    };
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let mut pts = Vec::with_capacity(deltas.len() + 2);
@@ -693,6 +729,16 @@ fn read_point_list(b: &[u8], i: &mut usize, closed: bool) -> Result<Vec<(i64, i6
                 deltas.push(read_gdelta(b, i)?);
             }
         }
+        5 => {
+            // double-delta g-deltas: each stored g-delta adds to a running delta
+            let (mut cdx, mut cdy) = (0i64, 0i64);
+            for _ in 0..count {
+                let (gx, gy) = read_gdelta(b, i)?;
+                cdx += gx;
+                cdy += gy;
+                deltas.push((cdx, cdy));
+            }
+        }
         t => return Err(OasisError(format!("point-list type {t} not supported in v0"))),
     }
     Ok(deltas)
@@ -726,12 +772,18 @@ fn read_path(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
             rs(b, i)?;
         }
     }
-    let deltas = if p { read_point_list(b, i, false)? } else { Vec::new() };
+    let deltas = if p {
+        let d = read_point_list(b, i, false)?;
+        st.m_path_pts = d.clone();
+        d
+    } else {
+        st.m_path_pts.clone() // reuse the modal path point-list
+    };
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let mut pts = Vec::with_capacity(deltas.len() + 1);
@@ -826,10 +878,10 @@ fn read_placement(
         angle = aa as f64 * 90.0;
     }
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     if angle == -0.0 {
@@ -867,10 +919,10 @@ fn read_trapezoid(b: &[u8], i: &mut usize, id: u64, st: &mut ParseState) -> GeoR
     let delta_a = if id != R_TRAPEZOID_B { rs(b, i)? } else { 0 };
     let delta_b = if id != R_TRAPEZOID_A { rs(b, i)? } else { 0 };
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let (px, py, ww, hh) = (st.m_x as i64, st.m_y as i64, st.m_geom_w, st.m_geom_h);
@@ -915,25 +967,26 @@ fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     if d {
         st.m_datatype = ru(b, i)? as i16;
     }
-    let ctype = if t_present { ru(b, i)? } else { 0 };
+    // ctrapezoid-type is modal: reuse the previous type when the T bit is clear.
+    let ctype = if t_present { ru(b, i)? } else { st.m_geom_ctype };
+    st.m_geom_ctype = ctype;
     if w {
         st.m_geom_w = ru(b, i)? as i64;
     }
     if h {
         st.m_geom_h = ru(b, i)? as i64;
     }
-    // Triangle/square ctrapezoid types store only one dimension; the other equals it.
-    if !h {
+    // Types 16..19 (right triangles) and 25 (square) carry a single dimension: height
+    // equals width. Every other type uses independent width and height, so when a field
+    // is absent it must keep its modal value — not mirror the other dimension.
+    if (16..=19).contains(&ctype) || ctype == 25 {
         st.m_geom_h = st.m_geom_w;
     }
-    if !w {
-        st.m_geom_w = st.m_geom_h;
-    }
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let pts = ctrapezoid_polygon(ctype, st.m_x as i64, st.m_y as i64, st.m_geom_w, st.m_geom_h)?;
@@ -942,8 +995,8 @@ fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
 
 /// Expand a CTRAPEZOID type (0..25) at `(x,y)` with box `(w,h)` into a closed polygon.
 /// The 26 forms are the SEMI-P39 compact set: 0–3 wedges off a full box, 4–7 double
-/// wedges, 8–15 half-height/width wedges, 16–23 the four right triangles, 24 a square,
-/// 25 a rectangle.
+/// wedges, 8–15 half-height/width wedges, 16–19 the four right triangles, 20–23 the four
+/// isoceles triangles (base spans 2w or 2h), 24 a rectangle, 25 a square.
 fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<(i32, i32)>, OasisError> {
     let (x0, y0, x1, y1) = (x, y, x + w, y + h);
     let close = |mut v: Vec<(i64, i64)>| {
@@ -982,14 +1035,13 @@ fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<
         19 => vec![(x0, y0), (x1, y1), (x0, y1)],
         24 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // rectangle (w x h)
         25 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // square (w x w)
-        // 20..23 are the rare 2x isoceles-triangle forms; not yet validated, so we
-        // error clearly rather than emit possibly-wrong geometry (types 0..19,24,25 are
-        // validated against gdstk).
-        20..=23 => {
-            return Err(OasisError(format!(
-                "ctrapezoid type {ctype} (2x isoceles triangle) not yet supported — please report"
-            )))
-        }
+        // 20..23 the four isoceles triangles ("2x": the base spans 2w or 2h, the apex
+        // is centred on the opposite side at height/width one). Validated against the
+        // KLayout golden on the OASIS conformance corpus (t9.1/t9.2).
+        20 => vec![(x0, y0), (x0 + w, y1), (x0 + 2 * w, y0)], // base bottom, apex up
+        21 => vec![(x0, y1), (x0 + w, y0), (x0 + 2 * w, y1)], // base top, apex down
+        22 => vec![(x0, y0), (x0, y0 + 2 * h), (x1, y0 + h)], // base left, apex right
+        23 => vec![(x1, y0), (x1, y0 + 2 * h), (x0, y0 + h)], // base right, apex left
         t => return Err(OasisError(format!("ctrapezoid type {t} out of range (0..25)"))),
     };
     Ok(close(v))
@@ -1011,10 +1063,10 @@ fn read_circle(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     let radius = if has_r { ru(b, i)? as i64 } else { st.m_halfwidth };
     st.m_halfwidth = radius; // circle radius shares the half-width modal per spec
     if x {
-        st.m_x = rs(b, i)? as i32;
+        st.set_mx(rs(b, i)? as i32);
     }
     if y {
-        st.m_y = rs(b, i)? as i32;
+        st.set_my(rs(b, i)? as i32);
     }
     let reps = if rep { read_repetition(b, i, st)? } else { Vec::new() };
     const N: usize = 48;
@@ -1125,6 +1177,37 @@ fn read_interval(b: &[u8], i: &mut usize) -> Result<(), OasisError> {
 fn skip_name_record(b: &[u8], i: &mut usize, _id: u64) -> Result<(), OasisError> {
     rstr(b, i)?; // the name / string
     ru(b, i)?; // the reference number
+    Ok(())
+}
+
+/// XGEOMETRY (record 33) is vendor/extension geometry we do not model. Consume its
+/// fields so the record stream stays aligned and any *standard* geometry in the same
+/// file still reads. Field order: an info-byte (low bits `XYRDL`), the always-present
+/// xgeometry-attribute, an optional layer and datatype, the always-present
+/// xgeometry-string, then optional x, y, and repetition. Modal layer/position are
+/// updated as for any geometry record.
+fn skip_xgeometry(b: &[u8], i: &mut usize, st: &mut ParseState) -> Result<(), OasisError> {
+    let info = rb(b, i)?;
+    let (x, y, r, d, l) = (
+        info & 0x10 != 0, info & 0x08 != 0, info & 0x04 != 0, info & 0x02 != 0, info & 0x01 != 0,
+    );
+    ru(b, i)?; // xgeometry-attribute (always present)
+    if l {
+        st.m_layer = ru(b, i)? as i16;
+    }
+    if d {
+        st.m_datatype = ru(b, i)? as i16;
+    }
+    rstr(b, i)?; // xgeometry-string (always present)
+    if x {
+        st.set_mx(rs(b, i)? as i32);
+    }
+    if y {
+        st.set_my(rs(b, i)? as i32);
+    }
+    if r {
+        read_repetition(b, i, st)?;
+    }
     Ok(())
 }
 
@@ -1474,9 +1557,29 @@ mod tests {
         assert_eq!(poly_area(&ctrapezoid_polygon(8, 0, 0, 40, 100).unwrap()), 3200.0);
         // type 24: rectangle 40×40 → 1600
         assert_eq!(poly_area(&ctrapezoid_polygon(24, 0, 0, 40, 40).unwrap()), 1600.0);
-        // the rare 2× forms (20..23) error rather than emit possibly-wrong geometry
-        assert!(ctrapezoid_polygon(20, 0, 0, 40, 40).is_err());
+        // types 20..23: isoceles triangles (base 2w or 2h), area = w*h = 1600 for 40×40.
+        // Validated against the KLayout golden (OASIS conformance t9.1/t9.2).
+        for t in 20..=23 {
+            assert_eq!(poly_area(&ctrapezoid_polygon(t, 0, 0, 40, 40).unwrap()), 1600.0);
+        }
+        // lock the type-20 form: base [0,0]–[80,0], apex centred at (40,40)
+        assert_eq!(
+            distinct_vertices(&ctrapezoid_polygon(20, 0, 0, 40, 40).unwrap()),
+            [(0, 0), (40, 40), (80, 0)]
+        );
         assert!(ctrapezoid_polygon(99, 0, 0, 40, 40).is_err());
+    }
+
+    // Point-list type 5 is double-delta: each stored g-delta adds to a running delta,
+    // and that running delta is the per-vertex step. Three east g-deltas of 2 (form-1,
+    // dir 0 = 0x20) therefore give per-vertex steps 2, 4, 6. Validated end-to-end
+    // against the KLayout golden (OASIS conformance t5.1/t5.3).
+    #[test]
+    fn point_list_type5_double_delta() {
+        let buf = [0x05u8, 0x03, 0x20, 0x20, 0x20];
+        let mut i = 0;
+        let d = read_point_list(&buf, &mut i, false).unwrap();
+        assert_eq!(d, [(2, 0), (4, 0), (6, 0)]);
     }
 
     #[test]
