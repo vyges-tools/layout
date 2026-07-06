@@ -1135,7 +1135,12 @@ fn skip_property(b: &[u8], i: &mut usize, id: u64) -> Result<(), OasisError> {
         return Ok(()); // reuse the modal property — nothing to consume
     }
     let info = rb(b, i)?;
-    let (c, n, v_present) = (info & 0x04 != 0, info & 0x02 != 0, info & 0x01 == 0);
+    // prop-info-byte is `UUUUVCNS`: C (bit 2) = property name present; N (bit 1) = that
+    // name is a reference-number (else a string); V (bit 3) set = reuse the modal
+    // value-list (so no count/values follow), clear = the value-list is present with
+    // UUUU (bits 4-7) as its count. S (bit 0), the standard-property flag, is not needed
+    // to walk the record.
+    let (c, n, v_present) = (info & 0x04 != 0, info & 0x02 != 0, info & 0x08 == 0);
     if c {
         if n {
             ru(b, i)?; // propname reference number
@@ -1491,5 +1496,42 @@ mod tests {
         let mut j = 0;
         let open = read_point_list(&bytes, &mut j, false).unwrap();
         assert_eq!(open, [(40, 0), (0, 20), (-20, 0), (0, 20)]);
+    }
+
+    // PROPERTY info-byte is `UUUUVCNS`; value presence is the V bit (3), not S (0).
+    // A standard property (S=1) with a value list (V=0) must still have its values
+    // consumed — the earlier S-bit read hid them and desynced the stream.
+    #[test]
+    fn property_standard_flag_does_not_hide_values() {
+        // info 0x11: UUUU=1 (one value), V=0 (values present), C=0, N=0, S=1.
+        // value: type 8 (unsigned-integer) = 42. Trailing 0x63 must survive.
+        let buf = [0x11u8, 0x08, 42, 0x63];
+        let mut i = 0;
+        skip_property(&buf, &mut i, R_PROPERTY).unwrap();
+        assert_eq!(i, 3, "info + value-type + value consumed, sentinel left");
+        assert_eq!(buf[i], 0x63);
+    }
+
+    // A named property (C=1, name given by reference-number N=1) with one value.
+    #[test]
+    fn property_with_name_ref_and_value() {
+        // info 0x16: UUUU=1, V=0, C=1, N=1, S=0. name-ref=3; value type 8 = 5.
+        let buf = [0x16u8, 3, 0x08, 5, 0x63];
+        let mut i = 0;
+        skip_property(&buf, &mut i, R_PROPERTY).unwrap();
+        assert_eq!(i, 4);
+        assert_eq!(buf[i], 0x63);
+    }
+
+    // V=1 means "reuse the modal value-list": UUUU is not a count and no values follow.
+    // The old S-bit logic read UUUU as a count here and over-consumed.
+    #[test]
+    fn property_reuse_values_consumes_no_value_bytes() {
+        // info 0x28: UUUU=2, V=1 (reuse), C=0, N=0, S=0. No value bytes follow.
+        let buf = [0x28u8, 0x63];
+        let mut i = 0;
+        skip_property(&buf, &mut i, R_PROPERTY).unwrap();
+        assert_eq!(i, 1, "only the info byte is consumed when V=1");
+        assert_eq!(buf[i], 0x63);
     }
 }
