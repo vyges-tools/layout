@@ -976,17 +976,12 @@ fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     if h {
         st.m_geom_h = ru(b, i)? as i64;
     }
-    // Single-dimension types — 16..19 (right triangles), 20..23 (isoceles triangles,
-    // base = 2×dimension), and 25 (square) — carry one dimension, so the absent one
-    // mirrors the present one. Two-dimension types (0..15, 24) use independent width and
-    // height and keep their modal value when a field is absent.
-    if (16..=23).contains(&ctype) || ctype == 25 {
-        if !h {
-            st.m_geom_h = st.m_geom_w;
-        }
-        if !w {
-            st.m_geom_w = st.m_geom_h;
-        }
+    // Types 16..19 (right triangles) and 25 (square) carry a single dimension: height
+    // equals width. Two-dimension types (0..15, 24) and the isoceles triangles (20..23,
+    // which are sized by one axis but keep the other modal) use independent width and
+    // height, so an absent field keeps its modal value.
+    if (16..=19).contains(&ctype) || ctype == 25 {
+        st.m_geom_h = st.m_geom_w;
     }
     if x {
         st.set_mx(rs(b, i)? as i32);
@@ -996,6 +991,20 @@ fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     }
     let reps = if r { read_repetition(b, i, st)? } else { Vec::new() };
     let pts = ctrapezoid_polygon(ctype, st.m_x as i64, st.m_y as i64, st.m_geom_w, st.m_geom_h)?;
+    // The modal geometry width/height track the bounding box, which later records that
+    // reuse them (e.g. a RECTANGLE with no dimensions of its own) depend on. For the
+    // isoceles types the box (2×side) differs from the stored side, so recompute it.
+    if let Some(&(fx, fy)) = pts.first() {
+        let (mut minx, mut maxx, mut miny, mut maxy) = (fx, fx, fy, fy);
+        for &(px, py) in &pts {
+            minx = minx.min(px);
+            maxx = maxx.max(px);
+            miny = miny.min(py);
+            maxy = maxy.max(py);
+        }
+        st.m_geom_w = (maxx - minx) as i64;
+        st.m_geom_h = (maxy - miny) as i64;
+    }
     Ok((Element::Boundary { layer: st.m_layer, datatype: st.m_datatype, pts }, reps))
 }
 
@@ -1044,10 +1053,12 @@ fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<
         // 20..23 the four isoceles triangles ("2x": the base spans 2w or 2h, the apex
         // is centred on the opposite side at height/width one). Validated against the
         // KLayout golden on the OASIS conformance corpus (t9.1/t9.2).
-        20 => vec![(x0, y0), (x0 + w, y1), (x0 + 2 * w, y0)], // base bottom, apex up
-        21 => vec![(x0, y1), (x0 + w, y0), (x0 + 2 * w, y1)], // base top, apex down
-        22 => vec![(x0, y0), (x0, y0 + 2 * h), (x1, y0 + h)], // base left, apex right
-        23 => vec![(x1, y0), (x1, y0 + 2 * h), (x0, y0 + h)], // base right, apex left
+        // Horizontal isoceles (20, 21) are sized by height h (base = 2h); vertical ones
+        // (22, 23) by width w (base = 2w). The apex sits one side-length in.
+        20 => vec![(x0, y0), (x0 + h, y0 + h), (x0 + 2 * h, y0)], // base bottom, apex up
+        21 => vec![(x0, y0 + h), (x0 + h, y0), (x0 + 2 * h, y0 + h)], // base top, apex down
+        22 => vec![(x0, y0), (x0, y0 + 2 * w), (x0 + w, y0 + w)], // base left, apex right
+        23 => vec![(x0 + w, y0), (x0 + w, y0 + 2 * w), (x0, y0 + w)], // base right, apex left
         t => return Err(OasisError(format!("ctrapezoid type {t} out of range (0..25)"))),
     };
     Ok(close(v))
@@ -1587,6 +1598,22 @@ mod tests {
             [(0, 0), (40, 40), (80, 0)]
         );
         assert!(ctrapezoid_polygon(99, 0, 0, 40, 40).is_err());
+    }
+
+    // After an isoceles ctrapezoid (base = 2×side), the modal geometry width/height
+    // must track the bounding box (2h × h), so a later record reusing them — e.g. a
+    // RECTANGLE with no dimensions of its own — is sized correctly. Validated against
+    // the KLayout golden (t9.1 layer 2/3, where each ctrapezoid is mirrored by a
+    // modal-reuse rectangle).
+    #[test]
+    fn ctrapezoid_modal_dims_track_bounding_box() {
+        let mut st = ParseState { m_geom_w: 250, ..Default::default() }; // stale width
+        // info TWHXYRDL = 0xBB: type=20, height=100, x=0, y=0, datatype=0, layer=5;
+        // width absent (must not leak the stale 250).
+        let buf = [0xBBu8, 5, 0, 20, 100, 0, 0];
+        let mut i = 0;
+        read_ctrapezoid(&buf, &mut i, &mut st).unwrap();
+        assert_eq!((st.m_geom_w, st.m_geom_h), (200, 100));
     }
 
     // Point-list type 5 is double-delta: each stored g-delta adds to a running delta,
