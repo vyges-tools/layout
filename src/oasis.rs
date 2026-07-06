@@ -976,11 +976,17 @@ fn read_ctrapezoid(b: &[u8], i: &mut usize, st: &mut ParseState) -> GeoResult {
     if h {
         st.m_geom_h = ru(b, i)? as i64;
     }
-    // Types 16..19 (right triangles) and 25 (square) carry a single dimension: height
-    // equals width. Every other type uses independent width and height, so when a field
-    // is absent it must keep its modal value — not mirror the other dimension.
-    if (16..=19).contains(&ctype) || ctype == 25 {
-        st.m_geom_h = st.m_geom_w;
+    // Single-dimension types — 16..19 (right triangles), 20..23 (isoceles triangles,
+    // base = 2×dimension), and 25 (square) — carry one dimension, so the absent one
+    // mirrors the present one. Two-dimension types (0..15, 24) use independent width and
+    // height and keep their modal value when a field is absent.
+    if (16..=23).contains(&ctype) || ctype == 25 {
+        if !h {
+            st.m_geom_h = st.m_geom_w;
+        }
+        if !w {
+            st.m_geom_w = st.m_geom_h;
+        }
     }
     if x {
         st.set_mx(rs(b, i)? as i32);
@@ -1010,14 +1016,14 @@ fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<
     let v = match ctype {
         // 0..3 horizontal right-trapezoids, one 45° corner cut of leg h (w >= h)
         0 => vec![(x0, y0), (x1, y0), (x1 - h, y1), (x0, y1)],
-        1 => vec![(x0, y0), (x1, y0), (x1, y1), (x0 + h, y1)],
-        2 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0, y1)],
+        1 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0, y1)],
+        2 => vec![(x0, y0), (x1, y0), (x1, y1), (x0 + h, y1)],
         3 => vec![(x0 + h, y0), (x1, y0), (x1, y1), (x0, y1)],
         // 4..5 isoceles horizontal trapezoids, 6..7 horizontal parallelograms (w >= 2h)
         4 => vec![(x0, y0), (x1, y0), (x1 - h, y1), (x0 + h, y1)],
         5 => vec![(x0 + h, y0), (x1 - h, y0), (x1, y1), (x0, y1)],
-        6 => vec![(x0 + h, y0), (x1, y0), (x1 - h, y1), (x0, y1)],
-        7 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0 + h, y1)],
+        6 => vec![(x0, y0), (x1 - h, y0), (x1, y1), (x0 + h, y1)],
+        7 => vec![(x0 + h, y0), (x1, y0), (x1 - h, y1), (x0, y1)],
         // 8..11 vertical right-trapezoids, one 45° cut of leg w (h >= w)
         8 => vec![(x0, y0), (x1, y0), (x1, y1 - w), (x0, y1)],
         9 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1 - w)],
@@ -1030,9 +1036,9 @@ fn ctrapezoid_polygon(ctype: u64, x: i64, y: i64, w: i64, h: i64) -> Result<Vec<
         15 => vec![(x0, y0 + w), (x1, y0), (x1, y1 - w), (x0, y1)],
         // 16..19 the four right triangles (legs w = h)
         16 => vec![(x0, y0), (x1, y0), (x0, y1)],
-        17 => vec![(x0, y0), (x1, y0), (x1, y1)],
-        18 => vec![(x1, y0), (x1, y1), (x0, y1)],
-        19 => vec![(x0, y0), (x1, y1), (x0, y1)],
+        17 => vec![(x0, y0), (x0, y1), (x1, y1)],
+        18 => vec![(x0, y0), (x1, y0), (x1, y1)],
+        19 => vec![(x1, y0), (x1, y1), (x0, y1)],
         24 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // rectangle (w x h)
         25 => vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], // square (w x w)
         // 20..23 the four isoceles triangles ("2x": the base spans 2w or 2h, the apex
@@ -1562,7 +1568,20 @@ mod tests {
         for t in 20..=23 {
             assert_eq!(poly_area(&ctrapezoid_polygon(t, 0, 0, 40, 40).unwrap()), 1600.0);
         }
-        // lock the type-20 form: base [0,0]–[80,0], apex centred at (40,40)
+        // Exact forms, validated against the KLayout golden (OASIS conformance t9.1).
+        // Horizontal trapezoids at w=250, h=100 (x0=0,y0=0,x1=250,y1=100):
+        let ct = |t| distinct_vertices(&ctrapezoid_polygon(t, 0, 0, 250, 100).unwrap());
+        assert_eq!(ct(1), [(0, 0), (150, 0), (250, 100), (0, 100)]);
+        assert_eq!(ct(2), [(0, 0), (250, 0), (250, 100), (100, 100)]);
+        assert_eq!(ct(6), [(0, 0), (150, 0), (250, 100), (100, 100)]);
+        assert_eq!(ct(7), [(100, 0), (250, 0), (150, 100), (0, 100)]);
+        // Right triangles at w=h=250 — the four corners:
+        let tr = |t| distinct_vertices(&ctrapezoid_polygon(t, 0, 0, 250, 250).unwrap());
+        assert_eq!(tr(16), [(0, 0), (250, 0), (0, 250)]);
+        assert_eq!(tr(17), [(0, 0), (0, 250), (250, 250)]);
+        assert_eq!(tr(18), [(0, 0), (250, 0), (250, 250)]);
+        assert_eq!(tr(19), [(250, 0), (250, 250), (0, 250)]);
+        // Isoceles type 20: base [0,0]–[80,0], apex centred at (40,40).
         assert_eq!(
             distinct_vertices(&ctrapezoid_polygon(20, 0, 0, 40, 40).unwrap()),
             [(0, 0), (40, 40), (80, 0)]
