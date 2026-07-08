@@ -16,12 +16,13 @@
 //! arrays/hierarchy should be flattened first; source/drain emitted in arbitrary order
 //! (the comparator is S/D-symmetric); the boolean is Manhattan.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::boolean::{boolean_poly, Op};
 use crate::gds::{Cell, Element, Library};
 use crate::geom::{self, Rect};
 use crate::netlist::{Device, Netlist};
+use crate::connect::{components, tile, union_bbox, Grid};
 
 type Ld = (i16, i16);
 
@@ -112,29 +113,6 @@ enum Role {
 struct Prim {
     rects: Vec<Rect>, // the shape geometry (tiled) — for TRUE overlap, not a bbox
     role: Role,
-    layer: Ld,
-}
-
-struct Uf {
-    p: Vec<usize>,
-}
-impl Uf {
-    fn new(n: usize) -> Uf {
-        Uf { p: (0..n).collect() }
-    }
-    fn find(&mut self, x: usize) -> usize {
-        if self.p[x] != x {
-            let r = self.find(self.p[x]);
-            self.p[x] = r;
-        }
-        self.p[x]
-    }
-    fn union(&mut self, a: usize, b: usize) {
-        let (a, b) = (self.find(a), self.find(b));
-        if a != b {
-            self.p[a] = b;
-        }
-    }
 }
 
 fn polys_on(cell: &Cell, ld: Ld) -> Vec<Vec<(i32, i32)>> {
@@ -153,17 +131,6 @@ fn bbox_of(p: &[(i32, i32)]) -> Rect {
 fn overlap(a: &Rect, b: &Rect) -> bool {
     a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
 }
-fn union_bbox(rects: &[Rect]) -> Rect {
-    let mut r = rects[0];
-    for x in &rects[1..] {
-        r.x0 = r.x0.min(x.x0);
-        r.y0 = r.y0.min(x.y0);
-        r.x1 = r.x1.max(x.x1);
-        r.y1 = r.y1.max(x.y1);
-    }
-    r
-}
-
 /// Channel width and length (in **metres**) from the channel bbox `cb` and the
 /// diffusion regions `sd` flanking it (`(net, bbox)`). Current flows along the axis
 /// that separates source from drain — that channel extent is the gate **length** L;
@@ -191,23 +158,6 @@ fn channel_wl(cb: &Rect, sd: &[(usize, Rect)], db_unit: f64) -> Option<(f64, f64
     };
     (l_dbu > 0.0 && w_dbu > 0.0).then_some((w_dbu * db_unit, l_dbu * db_unit))
 }
-/// Is `poly` a single axis-aligned rectangle (the overwhelmingly common shape)?
-fn is_rect(poly: &[(i32, i32)]) -> bool {
-    let p = if poly.len() >= 2 && poly.first() == poly.last() { &poly[..poly.len() - 1] } else { poly };
-    if p.len() != 4 {
-        return false;
-    }
-    let bb = bbox_of(poly);
-    p.iter().all(|&(x, y)| (x == bb.x0 || x == bb.x1) && (y == bb.y0 || y == bb.y1))
-}
-/// Rect-tiling of a rectilinear polygon — preserves true geometry (vs a bbox). A plain
-/// rectangle (contacts, vias, most metal) skips the scanline boolean entirely.
-fn tile(poly: &[(i32, i32)]) -> Vec<Rect> {
-    if is_rect(poly) {
-        return vec![bbox_of(poly)];
-    }
-    boolean_poly(&[poly.to_vec()], &[], Op::Or)
-}
 /// True (inclusive) geometric touch between two rect sets, with a bbox quick-reject.
 fn rects_touch(a: &[Rect], b: &[Rect]) -> bool {
     if a.is_empty() || b.is_empty() || !overlap(&union_bbox(a), &union_bbox(b)) {
@@ -215,112 +165,6 @@ fn rects_touch(a: &[Rect], b: &[Rect]) -> bool {
     }
     a.iter().any(|r| b.iter().any(|s| overlap(r, s)))
 }
-/// Uniform-grid spatial index over a set of axis-aligned boxes, so overlap queries are
-/// ~O(1) instead of O(n). A box spanning many cells (power rails, wells) would pollute
-/// thousands of buckets, so anything covering more than `BIG_CELLS` cells goes into a
-/// small `big` list checked against every query — bounding both build and query cost.
-struct Grid {
-    cell: i64,
-    minx: i64,
-    miny: i64,
-    buckets: HashMap<(i32, i32), Vec<usize>>,
-    big: Vec<usize>,
-}
-const BIG_CELLS: i64 = 256;
-impl Grid {
-    fn build(boxes: &[Rect]) -> Grid {
-        let n = boxes.len().max(1);
-        let (mut minx, mut miny, mut maxx, mut maxy) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-        let (mut wsum, mut hsum) = (0i64, 0i64);
-        for r in boxes {
-            minx = minx.min(r.x0 as i64);
-            miny = miny.min(r.y0 as i64);
-            maxx = maxx.max(r.x1 as i64);
-            maxy = maxy.max(r.y1 as i64);
-            wsum += (r.x1 - r.x0) as i64 + 1;
-            hsum += (r.y1 - r.y0) as i64 + 1;
-        }
-        if boxes.is_empty() {
-            (minx, miny, maxx, maxy) = (0, 0, 0, 0);
-        }
-        // cell size ≈ average box dimension, but never so fine that a normal box spans
-        // a huge area — bounded below by span/512.
-        let avg = ((wsum + hsum) / (2 * n as i64)).max(1);
-        let span = (maxx - minx).max(maxy - miny).max(1);
-        let cell = avg.max(span / 512).max(1);
-        let mut g = Grid { cell, minx, miny, buckets: HashMap::new(), big: Vec::new() };
-        for (i, r) in boxes.iter().enumerate() {
-            let (cx0, cy0, cx1, cy1) = g.range(r);
-            let ncells = (cx1 - cx0 + 1) as i64 * (cy1 - cy0 + 1) as i64;
-            if ncells > BIG_CELLS {
-                g.big.push(i);
-            } else {
-                for cx in cx0..=cx1 {
-                    for cy in cy0..=cy1 {
-                        g.buckets.entry((cx, cy)).or_default().push(i);
-                    }
-                }
-            }
-        }
-        g
-    }
-    fn range(&self, r: &Rect) -> (i32, i32, i32, i32) {
-        let c = self.cell;
-        (
-            ((r.x0 as i64 - self.minx) / c) as i32,
-            ((r.y0 as i64 - self.miny) / c) as i32,
-            ((r.x1 as i64 - self.minx) / c) as i32,
-            ((r.y1 as i64 - self.miny) / c) as i32,
-        )
-    }
-    /// Candidate box indices whose cells touch `r` (a superset of true overlaps; dedup'd).
-    fn query(&self, r: &Rect, out: &mut Vec<usize>) {
-        out.clear();
-        let (cx0, cy0, cx1, cy1) = self.range(r);
-        for cx in cx0..=cx1 {
-            for cy in cy0..=cy1 {
-                if let Some(v) = self.buckets.get(&(cx, cy)) {
-                    out.extend_from_slice(v);
-                }
-            }
-        }
-        out.extend_from_slice(&self.big);
-        out.sort_unstable();
-        out.dedup();
-    }
-}
-
-fn components(rects: &[Rect]) -> Vec<Vec<Rect>> {
-    let n = rects.len();
-    let mut uf = Uf::new(n);
-    // Two overlapping boxes always share at least one grid cell, so unioning only
-    // within-bucket (+ against big boxes) finds every connected component — but in
-    // ~O(n) instead of the O(n²) all-pairs scan.
-    let g = Grid::build(rects);
-    for idxs in g.buckets.values() {
-        for a in 0..idxs.len() {
-            for b in a + 1..idxs.len() {
-                let (i, j) = (idxs[a], idxs[b]);
-                if uf.find(i) != uf.find(j) && overlap(&rects[i], &rects[j]) {
-                    uf.union(i, j);
-                }
-            }
-        }
-    }
-    for &i in &g.big {
-        for j in 0..n {
-            if i != j && uf.find(i) != uf.find(j) && overlap(&rects[i], &rects[j]) {
-                uf.union(i, j);
-            }
-        }
-    }
-    let mut groups: HashMap<usize, Vec<Rect>> = HashMap::new();
-    for i in 0..n {
-        groups.entry(uf.find(i)).or_default().push(rects[i]);
-    }
-    groups.into_values().collect()
-}
-
 pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlist, String> {
     let base = match top {
         Some(t) => lib.cells.iter().find(|c| c.name == t).ok_or_else(|| format!("cell {t:?} not found"))?,
@@ -415,7 +259,7 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
             } else {
                 Role::Metal
             };
-            Prim { rects: p.rects, role, layer: p.layer }
+            Prim { rects: p.rects, role }
         })
         .collect();
     let net_id = t.net_id;
