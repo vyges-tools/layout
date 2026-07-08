@@ -215,29 +215,6 @@ fn rects_touch(a: &[Rect], b: &[Rect]) -> bool {
     }
     a.iter().any(|r| b.iter().any(|s| overlap(r, s)))
 }
-fn pt_in(rects: &[Rect], x: i32, y: i32) -> bool {
-    rects.iter().any(|r| r.x0 <= x && x <= r.x1 && r.y0 <= y && y <= r.y1)
-}
-fn contains(o: &Rect, c: &Rect) -> bool {
-    o.x0 <= c.x0 && c.x1 <= o.x1 && o.y0 <= c.y0 && c.y1 <= o.y1
-}
-/// Enclosure: is `inner` fully covered by `outer` (a DRC-clean contact sits inside its
-/// metal)? `inner − outer` is empty. Used to gate cross-layer connectivity.
-fn enclosed(inner: &[Rect], outer: &[Rect]) -> bool {
-    if inner.is_empty() || outer.is_empty() || !overlap(&union_bbox(inner), &union_bbox(outer)) {
-        return false;
-    }
-    // Fast path: every inner rect sits wholly inside one outer rect — true for a normal
-    // single-cut contact in its metal, and avoids the scanline boolean on the hot path
-    // (a routed block has thousands of contacts/vias). Fall back to the exact boolean
-    // only for the rare case where a contact straddles several outer rects.
-    if inner.iter().all(|c| outer.iter().any(|o| contains(o, c))) {
-        return true;
-    }
-    let ip: Vec<_> = inner.iter().map(|r| r.as_boundary()).collect();
-    let op: Vec<_> = outer.iter().map(|r| r.as_boundary()).collect();
-    boolean_poly(&ip, &op, Op::Not).is_empty()
-}
 /// Uniform-grid spatial index over a set of axis-aligned boxes, so overlap queries are
 /// ~O(1) instead of O(n). A box spanning many cells (power rails, wells) would pollute
 /// thousands of buckets, so anything covering more than `BIG_CELLS` cells goes into a
@@ -387,97 +364,67 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
     let nwell = polys_on(cell, rules.nwell);
     mark("read active/poly/nwell");
 
-    // --- connectivity primitives (same-layer touching shapes already merged) ---
-    let mut prims: Vec<Prim> = Vec::new();
+    // --- connectivity: net tracing via the shared `connect` kernel ---
     let mut conn = rules.conn.clone();
-    // The device layers (active, poly) and the well must form prims for channels to
-    // find their gate/source/drain — auto-add them so a ruleset that lists only the
-    // routing layers in `conn` can't silently extract 0 devices.
+    // active/poly/nwell must form prims for channels to find gate/source/drain.
     for extra in [rules.nwell, rules.active, rules.poly] {
         if !conn.contains(&extra) {
             conn.push(extra);
         }
     }
-    for &cl in &conn {
-        if cl == rules.active {
-            for comp in components(&boolean_poly(&active, &poly, Op::Not)) {
-                prims.push(Prim { rects: comp, role: Role::Active, layer: cl });
+    // diffusion is diffusion-MINUS-poly, so the two source/drain regions flanking a
+    // gate become separate nets (not shorted through the channel region).
+    let active_sd: Vec<crate::connect::Poly> =
+        boolean_poly(&active, &poly, Op::Not).iter().map(|r| r.as_boundary()).collect();
+    let layers: Vec<(Ld, Vec<crate::connect::Poly>)> = conn
+        .iter()
+        .map(|&cl| if cl == rules.active { (cl, active_sd.clone()) } else { (cl, polys_on(cell, cl)) })
+        .collect();
+    // a contact joins two layers where it is enclosed by a shape on each.
+    let cuts: Vec<crate::connect::Cut> = rules
+        .contacts
+        .iter()
+        .map(|(cl, la, lb)| crate::connect::Cut::Enclosed { cut: polys_on(cell, *cl), a: *la, b: *lb })
+        .collect();
+    // labels ONLY from the ORIGINAL top cell (Gap A: a flattened hierarchical layout
+    // would otherwise promote every std-cell pin label to a top-level port), tagged
+    // with their layer so a met-N label attaches to the met-N net.
+    let labels: Vec<(String, i16, i32, i32)> = base
+        .elements
+        .iter()
+        .filter_map(|el| match el {
+            Element::Text { layer, texttype, x, y, string } if rules.label.contains(&(*layer, *texttype)) => {
+                Some((string.clone(), *layer, *x, *y))
             }
-        } else {
-            let role = if cl == rules.poly {
+            _ => None,
+        })
+        .collect();
+    let t = crate::connect::trace(&layers, &cuts, &labels);
+    mark("connect::trace");
+    // role-tag the traced prims for device detection.
+    let prims: Vec<Prim> = t
+        .prims
+        .into_iter()
+        .map(|p| {
+            let role = if p.layer == rules.active {
+                Role::Active
+            } else if p.layer == rules.poly {
                 Role::Poly
-            } else if cl == rules.nwell {
+            } else if p.layer == rules.nwell {
                 Role::Well
             } else {
                 Role::Metal
             };
-            // tile every shape on the layer, then group by TRUE rect overlap (not bbox)
-            // — so L-shaped / abutting-bbox routing on one layer doesn't over-merge.
-            let mut tiles = Vec::new();
-            for s in polys_on(cell, cl) {
-                tiles.extend(tile(&s));
-            }
-            for comp in components(&tiles) {
-                prims.push(Prim { rects: comp, role, layer: cl });
-            }
-        }
-    }
-    mark("build prims");
-
-    // --- nets: union prims only through contacts (and same-layer, already merged) ---
-    let n = prims.len();
-    let mut uf = Uf::new(n);
-    // spatial index over prim bounding boxes — every prim-vs-geometry scan below (contacts,
-    // gate/source/drain, bulk) queries this instead of walking all n prims (O(n²) → ~O(n)).
+            Prim { rects: p.rects, role, layer: p.layer }
+        })
+        .collect();
+    let net_id = t.net_id;
+    let nnets = t.nnets;
+    let name = t.names;
+    // spatial index over prim bboxes for the device-detection scans below.
     let prim_bb: Vec<Rect> = prims.iter().map(|p| union_bbox(&p.rects)).collect();
     let pgrid = Grid::build(&prim_bb);
     let mut cand: Vec<usize> = Vec::new();
-    // a contact/via joins two layers only where it is ENCLOSED by a shape on each
-    // (DRC-clean overlap, not a bare edge-touch) — this also covers metal↔metal vias,
-    // which are just more `contact:` rules.
-    for (cl, la, lb) in &rules.contacts {
-        for cp in polys_on(cell, *cl) {
-            let ct = tile(&cp);
-            pgrid.query(&union_bbox(&ct), &mut cand);
-            let pa = cand.iter().copied().find(|&pi| prims[pi].layer == *la && enclosed(&ct, &prims[pi].rects));
-            let pb = cand.iter().copied().find(|&pi| prims[pi].layer == *lb && enclosed(&ct, &prims[pi].rects));
-            if let (Some(i), Some(j)) = (pa, pb) {
-                uf.union(i, j);
-            }
-        }
-    }
-    let mut canon: BTreeMap<usize, usize> = BTreeMap::new();
-    let net_id: Vec<usize> = (0..n)
-        .map(|i| {
-            let r = uf.find(i);
-            let k = canon.len();
-            *canon.entry(r).or_insert(k)
-        })
-        .collect();
-    let nnets = canon.len();
-
-    // names from TEXT labels -> labelled nets are ports. Read labels ONLY from the
-    // ORIGINAL top cell (`base`), never the flattened `cell`: after flattening a
-    // hierarchical layout, every standard cell's internal pin label (A/Y/CLK/…) would
-    // otherwise be promoted to a top-level port and swamp the real boundary pins. The
-    // top cell's own labels are exactly the block's ports (internal nets stay `nX`,
-    // which is fine — the comparator is name-independent).
-    let mut name: Vec<Option<String>> = vec![None; nnets];
-    for el in &base.elements {
-        if let Element::Text { layer, texttype, x, y, string } = el {
-            if rules.label.contains(&(*layer, *texttype)) {
-                // prefer a prim on the label's own base layer (e.g. an nwell label →
-                // the nwell net, not a diffusion that happens to be under it), else any.
-                let pi = prims
-                    .iter()
-                    .position(|p| p.layer.0 == *layer && pt_in(&p.rects, *x, *y))
-                    .or_else(|| prims.iter().position(|p| pt_in(&p.rects, *x, *y)));
-                if let Some(pi) = pi {
-                    name[net_id[pi]] = Some(string.clone());
-                }
-            }
-        }
-    }
     let net_name = |nid: usize| name[nid].clone().unwrap_or_else(|| format!("n{nid}"));
 
     mark("net union-find (contacts)");

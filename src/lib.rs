@@ -35,6 +35,7 @@ pub mod sizing;
 pub mod flatten;
 pub mod engine;
 pub mod netlist;
+pub mod connect;
 pub mod extract;
 pub mod pdk;
 
