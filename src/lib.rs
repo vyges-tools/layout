@@ -34,6 +34,8 @@ pub mod edges;
 pub mod sizing;
 pub mod flatten;
 pub mod engine;
+pub mod netlist;
+pub mod extract;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COPYRIGHT: &str = "© 2026 Vyges. All Rights Reserved.  https://vyges.com";
