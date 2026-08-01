@@ -258,6 +258,26 @@ mod tests {
     }
 
     #[test]
+    fn typographic_punctuation_transliterates_rather_than_vanishing() {
+        // An em dash or middle dot that renders as a blank turns `soc — inst` into `soc   inst`,
+        // which reads as though the separator was never there. The vector back-end keeps the real
+        // character; only the raster path substitutes.
+        for (from, to) in [
+            ('\u{2014}', '-'),
+            ('\u{00b7}', '.'),
+            ('\u{00d7}', 'x'),
+            ('\u{00b5}', 'u'),
+            ('\u{2192}', '>'),
+        ] {
+            assert_eq!(font::fallback(from), to, "{from:?} should map to {to:?}");
+            assert!(font::glyph(from).is_some(), "{from:?} has no drawable glyph");
+        }
+        // Something with no sensible substitute still falls through to a blank rather than to a
+        // wrong glyph.
+        assert!(font::glyph('\u{4e2d}').is_none());
+    }
+
+    #[test]
     fn descenders_survived_the_conversion() {
         // The art's trailing blank rows are data, not padding — a parser that strips them shifts
         // every glyph up a row and silently loses the tail of 'g', 'j', 'p', 'q', 'y'.

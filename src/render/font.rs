@@ -98,3 +98,36 @@ pub const FONT: [(char, [u8; 5]); 84] = [
     ('y', [0x0c, 0x50, 0x50, 0x50, 0x3c]),
     ('z', [0x44, 0x64, 0x54, 0x4c, 0x44]),
 ];
+
+/// Map a character the font has no glyph for onto one it does.
+///
+/// The alternative is a blank cell, which is the quiet kind of wrong: `soc — inst` becomes
+/// `soc   inst` and reads as though the separator were never there. The vector back-end keeps
+/// the real typography, since a browser has the fonts; only the raster path transliterates.
+///
+/// Deliberately small — this covers the punctuation that turns up in engineering labels, not
+/// Unicode. Anything unmapped still falls through to a blank, which is the honest result when
+/// there is nothing sensible to substitute.
+pub fn fallback(c: char) -> char {
+    match c {
+        '\u{2014}' | '\u{2013}' | '\u{2212}' => '-',  // em dash, en dash, minus
+        '\u{00b7}' | '\u{2022}' => '.',                // middle dot, bullet
+        '\u{00d7}' => 'x',                            // multiplication sign
+        '\u{00b5}' | '\u{03bc}' => 'u',                // micro sign, Greek mu
+        '\u{00b0}' => 'o',                            // degree
+        '\u{2018}' | '\u{2019}' => '\'',               // curly single quotes
+        '\u{201c}' | '\u{201d}' => '"',               // curly double quotes
+        '\u{2026}' => '.',                            // ellipsis
+        '\u{00a0}' | '\u{2009}' | '\u{202f}' => ' ',    // nbsp, thin, narrow-nbsp
+        '\u{2713}' | '\u{2714}' => '+',                // check marks
+        '\u{2192}' => '>',                            // rightwards arrow
+        '\u{03a9}' => 'O',                            // ohm
+        other => other,
+    }
+}
+
+/// Look a glyph up, transliterating first.
+pub fn glyph(c: char) -> Option<&'static [u8; 5]> {
+    let c = fallback(c);
+    FONT.iter().find(|(g, _)| *g == c).map(|(_, cols)| cols)
+}

@@ -8,7 +8,7 @@
 //! at the sizes these drawings are viewed the cost of a smoothing pass buys very little. Lines
 //! are drawn with a Bresenham walk widened perpendicular to their run.
 
-use super::{anchor_x, font::FONT, Rgb, Scene, Shape, ADVANCE};
+use super::{anchor_x, font::glyph, Rgb, Scene, Shape, ADVANCE};
 
 struct Canvas {
     w: usize,
@@ -91,7 +91,7 @@ impl Canvas {
         // Baseline sits at the bottom of the 7-row cell.
         let top = y - 7.0 * px as f64;
         for (i, ch) in text.chars().enumerate() {
-            let Some((_, cols)) = FONT.iter().find(|(g, _)| *g == ch) else {
+            let Some(cols) = glyph(ch) else {
                 continue; // unmapped: leave the cell blank rather than draw a wrong glyph
             };
             let gx = x + i as f64 * cell;
