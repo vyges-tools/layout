@@ -38,6 +38,7 @@ pub mod netlist;
 pub mod connect;
 pub mod extract;
 pub mod pdk;
+pub mod render;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COPYRIGHT: &str = "© 2026 Vyges. All Rights Reserved.  https://vyges.com";
