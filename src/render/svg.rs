@@ -2,7 +2,7 @@
 //! Scene → SVG. Self-contained: no external stylesheet, no font file, nothing to fetch, so the
 //! output works from a `file://` URL and survives being committed to a repository.
 
-use super::{Rgb, Scene, Shape};
+use super::{Rgb, Scene, Shape, CREDIT_COLOR, CREDIT_INSET, CREDIT_SIZE};
 use std::fmt::Write as _;
 
 fn hex((r, g, b): Rgb) -> String {
@@ -109,6 +109,18 @@ pub fn to_svg(s: &Scene) -> String {
                 );
             }
         }
+    }
+    // Last, so it is never painted over by the scene's own shapes.
+    if let Some(c) = &s.credit {
+        let _ = write!(
+            o,
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"{CREDIT_SIZE:.1}\" fill=\"{}\" \
+             text-anchor=\"end\">{}</text>\n",
+            s.width - CREDIT_INSET,
+            s.height - CREDIT_INSET,
+            hex(CREDIT_COLOR),
+            esc(c)
+        );
     }
     o.push_str("</svg>\n");
     o

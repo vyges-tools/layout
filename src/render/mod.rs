@@ -134,6 +134,9 @@ pub struct Scene {
     pub shapes: Vec<Shape>,
     /// Goes in the SVG `<title>`; ignored by the raster back-end, which has nowhere to put it.
     pub title: String,
+    /// Small credit line in the bottom-right corner. Drawn by both back-ends, since a picture
+    /// that leaves the tool loses every other trace of where it came from.
+    pub credit: Option<String>,
 }
 
 impl Default for Scene {
@@ -144,6 +147,7 @@ impl Default for Scene {
             background: (255, 255, 255),
             shapes: Vec::new(),
             title: String::new(),
+            credit: None,
         }
     }
 }
@@ -167,6 +171,20 @@ impl Scene {
         self
     }
 
+    /// Set the corner credit line explicitly.
+    pub fn with_credit(mut self, c: impl Into<String>) -> Scene {
+        self.credit = Some(c.into());
+        self
+    }
+
+    /// The house credit, with the year taken from the clock rather than written down.
+    ///
+    /// A hardcoded year is wrong for all but twelve months and nobody notices the day it turns
+    /// over, so this is computed at render time.
+    pub fn with_vyges_credit(self) -> Scene {
+        self.with_credit(format!("\u{a9} {} https://vyges.com", current_year()))
+    }
+
     pub fn push(&mut self, s: Shape) -> &mut Scene {
         self.shapes.push(s);
         self
@@ -183,6 +201,37 @@ impl Scene {
         png::to_png(self, scale)
     }
 }
+
+/// Current UTC year, from the system clock.
+///
+/// Days-to-civil is Howard Hinnant\'s public-domain algorithm, shifted to an era beginning on
+/// 0000-03-01 so leap years fall at the end of the period. Written out rather than pulled from a
+/// date crate: this is the only date arithmetic in the crate, and a calendar dependency to print
+/// four digits would be out of proportion.
+pub fn current_year() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let y = yoe + era * 400;
+    // The era starts in March, so Jan and Feb belong to the following calendar year.
+    if mp >= 10 {
+        y + 1
+    } else {
+        y
+    }
+}
+
+/// Font size of the corner credit, and its inset from the bottom-right.
+pub(crate) const CREDIT_SIZE: f64 = 8.0;
+pub(crate) const CREDIT_INSET: f64 = 6.0;
+pub(crate) const CREDIT_COLOR: Rgb = (160, 160, 168);
 
 /// Advance width of one glyph cell, in units of the nominal text size.
 ///
@@ -255,6 +304,47 @@ mod tests {
         assert!(a.iter().any(|&col| col != 0), "'A' came out blank");
         let (_, sp) = font::FONT.iter().find(|(c, _)| *c == ' ').unwrap();
         assert!(sp.iter().all(|&col| col == 0), "space must be blank");
+    }
+
+    #[test]
+    fn the_credit_is_drawn_by_both_back_ends() {
+        // A picture that leaves the tool loses every other trace of where it came from, so this
+        // has to survive into the raster path too — not only the SVG, where it is easy.
+        let s = sample().with_vyges_credit();
+        let svg = s.to_svg();
+        assert!(svg.contains("https://vyges.com"), "credit missing from SVG");
+        assert!(svg.contains("text-anchor=\"end\""), "credit should sit in the corner");
+
+        assert_ne!(
+            s.to_png(2.0),
+            sample().to_png(2.0),
+            "the credit reached the SVG but not the PNG"
+        );
+    }
+
+    #[test]
+    fn the_credit_year_comes_from_the_clock() {
+        // A hardcoded year is wrong for all but twelve months and nobody notices the day it
+        // turns over. Asserting a literal here would be the same bug in the test.
+        let y = current_year();
+        assert!((2026..2200).contains(&y), "implausible year {y}");
+        let c = Scene::new(10.0, 10.0).with_vyges_credit().credit.unwrap();
+        assert_eq!(c, format!("\u{a9} {y} https://vyges.com"));
+    }
+
+    #[test]
+    fn the_copyright_sign_has_a_glyph_rather_than_a_blank() {
+        // It is the one character in the credit line the ASCII font would otherwise lack, and a
+        // blank there reads as a stray space before the year.
+        let cols = font::glyph('\u{a9}').expect("(c) must be drawable");
+        assert!(cols.iter().any(|&c| c != 0));
+    }
+
+    #[test]
+    fn a_scene_without_a_credit_draws_none() {
+        // Opt-in: this is a shared renderer, and stamping every drawing in the suite with a mark
+        // its caller did not ask for is not the renderer's decision to make.
+        assert!(!sample().to_svg().contains("vyges.com"));
     }
 
     #[test]

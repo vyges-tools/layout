@@ -8,7 +8,8 @@
 //! at the sizes these drawings are viewed the cost of a smoothing pass buys very little. Lines
 //! are drawn with a Bresenham walk widened perpendicular to their run.
 
-use super::{anchor_x, font::glyph, Rgb, Scene, Shape, ADVANCE};
+use super::{anchor_x, font::glyph, Anchor, Rgb, Scene, Shape, ADVANCE, CREDIT_COLOR,
+            CREDIT_INSET, CREDIT_SIZE};
 
 struct Canvas {
     w: usize,
@@ -175,6 +176,18 @@ pub fn to_png(s: &Scene, scale: f64) -> Vec<u8> {
                 cv.text(left * scale, y * scale, text, size * scale, *fill, *bold);
             }
         }
+    }
+    // Last, so it is never painted over by the scene's own shapes.
+    if let Some(c) = &s.credit {
+        let x = anchor_x(s.width - CREDIT_INSET, c, CREDIT_SIZE, Anchor::End);
+        cv.text(
+            x * scale,
+            (s.height - CREDIT_INSET) * scale,
+            c,
+            CREDIT_SIZE * scale,
+            CREDIT_COLOR,
+            false,
+        );
     }
     encode(&cv.px, w as u32, h as u32)
 }
