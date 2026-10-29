@@ -115,7 +115,8 @@ impl Library {
                     }
                 }
                 BOUNDARY | PATH | SREF | AREF | TEXT | BOX => {
-                    e = Eb::default();
+                    // A reference without a MAG record is unmagnified: GDSII's default is 1.
+                    e = Eb { mag: 1.0, ..Eb::default() };
                     e.rtype = rtype;
                 }
                 LAYER => e.layer = be_i16(data),
@@ -249,15 +250,17 @@ fn write_elem(o: &mut Vec<u8>, el: &Element) {
             rec(o, XY, 0x03, &xy_bytes(pts));
             rec(o, ENDEL, 0x00, &[]);
         }
-        Element::Sref { sname, x, y, .. } => {
+        Element::Sref { sname, x, y, reflect, mag, angle } => {
             rec(o, SREF, 0x00, &[]);
             rec(o, SNAME, 0x06, str_bytes(sname).as_slice());
+            write_strans(o, *reflect, *mag, *angle);
             rec(o, XY, 0x03, &xy_bytes(&[(*x, *y)]));
             rec(o, ENDEL, 0x00, &[]);
         }
-        Element::Aref { sname, cols, rows, pts, .. } => {
+        Element::Aref { sname, cols, rows, pts, reflect, mag, angle } => {
             rec(o, AREF, 0x00, &[]);
             rec(o, SNAME, 0x06, str_bytes(sname).as_slice());
+            write_strans(o, *reflect, *mag, *angle);
             let mut cr = Vec::new();
             cr.extend_from_slice(&cols.to_be_bytes());
             cr.extend_from_slice(&rows.to_be_bytes());
@@ -280,6 +283,23 @@ fn write_elem(o: &mut Vec<u8>, el: &Element) {
             rec(o, STRING, 0x06, str_bytes(string).as_slice());
             rec(o, ENDEL, 0x00, &[]);
         }
+    }
+}
+
+/// A reference's transform: STRANS (bit 15 = reflect about x), then MAG and ANGLE when they are not
+/// 1 and 0 — the record order GDSII gives. Nothing at all for the identity. A magnification of 0
+/// (an element built without one) is read as 1, as the readers here read it.
+fn write_strans(o: &mut Vec<u8>, reflect: bool, mag: f64, angle: f64) {
+    let mag = if mag == 0.0 { 1.0 } else { mag };
+    if !reflect && mag == 1.0 && angle == 0.0 {
+        return;
+    }
+    rec(o, STRANS, 0x01, &(if reflect { 0x8000u16 } else { 0 }).to_be_bytes());
+    if mag != 1.0 {
+        rec(o, MAG, 0x05, &enc_real8(mag));
+    }
+    if angle != 0.0 {
+        rec(o, ANGLE, 0x05, &enc_real8(angle));
     }
 }
 
@@ -393,6 +413,35 @@ mod tests {
             let d = real8(&enc_real8(v));
             assert!((d - v).abs() / v < 1e-9, "{v} -> {d}");
         }
+    }
+
+    /// A reference keeps its reflection, magnification and rotation through write and read; an
+    /// unmagnified, unrotated one writes no STRANS and reads back with MAG 1.
+    #[test]
+    fn a_reference_keeps_its_transform_through_a_round_trip() {
+        let mut lib = Library::default();
+        lib.cells.push(Cell { name: "leaf".into(), elements: vec![] });
+        lib.cells.push(Cell {
+            name: "top".into(),
+            elements: vec![
+                Element::Sref { sname: "leaf".into(), x: 10, y: 20, reflect: true, mag: 2.0, angle: 90.0 },
+                Element::Sref { sname: "leaf".into(), x: 0, y: 0, reflect: false, mag: 1.0, angle: 0.0 },
+                Element::Aref { sname: "leaf".into(), cols: 2, rows: 3, pts: vec![(0, 0), (200, 0), (0, 300)], reflect: true, mag: 1.0, angle: 270.0 },
+            ],
+        });
+        let bytes = lib.to_bytes();
+        let back = Library::parse(&bytes).unwrap();
+        let got: Vec<(bool, f64, f64)> = back.cells[1]
+            .elements
+            .iter()
+            .map(|e| match e {
+                Element::Sref { reflect, mag, angle, .. } | Element::Aref { reflect, mag, angle, .. } => (*reflect, *mag, *angle),
+                _ => panic!("expected a reference"),
+            })
+            .collect();
+        assert_eq!(got, [(true, 2.0, 90.0), (false, 1.0, 0.0), (true, 1.0, 270.0)]);
+        let strans = bytes.windows(4).filter(|w| w[2] == STRANS && w[3] == 0x01 && u16::from_be_bytes([w[0], w[1]]) == 6).count();
+        assert_eq!(strans, 2, "the identity reference writes no STRANS");
     }
 
     #[test]
