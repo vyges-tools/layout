@@ -223,11 +223,21 @@ pub fn components(rects: &[Rect]) -> Vec<Vec<Rect>> {
             }
         }
     }
-    let mut groups: HashMap<usize, Vec<Rect>> = HashMap::new();
-    for i in 0..n {
-        groups.entry(uf.find(i)).or_default().push(rects[i]);
+    // Groups in order of their first rect, each in input order. NOT a hash map's iteration
+    // order: that is reseeded per map, and it decided the order of every prim, and through the
+    // prims the net numbers, device order and source/drain order of an extracted netlist — two
+    // extractions of one layout in one process gave different netlist text. The union-find root
+    // is not a key either: which index ends up the root depends on the union order.
+    let mut slot: HashMap<usize, usize> = HashMap::new(); // root -> index into `groups` (lookup only)
+    let mut groups: Vec<Vec<Rect>> = Vec::new();
+    for (i, r) in rects.iter().enumerate() {
+        let k = *slot.entry(uf.find(i)).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[k].push(*r);
     }
-    groups.into_values().collect()
+    groups
 }
 
 /// Trace connected nets.
@@ -325,4 +335,26 @@ pub fn trace(layers: &[(Ld, Vec<Poly>)], cuts: &[Cut], labels: &[(String, i16, i
     }
 
     Traced { prims, net_id, names, cut_count, nnets }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Components come out in order of their first rect, each in input order — the order every
+    /// prim, net number and device of an extraction follows. Repeated because the old order was a
+    /// hash map's, which changes from one map to the next.
+    #[test]
+    fn components_come_out_in_input_order() {
+        let r = |x0, y0, x1, y1| Rect { x0, y0, x1, y1 };
+        // 0 joins 4 (overlap); 1 joins 2; 3 is alone. Ordered by FIRST member: {0,4}, {1,2}, {3}.
+        // Ordered by last member, or by union-find root, it would start with {1,2}.
+        let rects = [r(0, 0, 10, 10), r(100, 0, 110, 10), r(105, 5, 120, 20), r(50, 50, 60, 60), r(5, 5, 20, 20)];
+        for _ in 0..20 {
+            assert_eq!(
+                components(&rects),
+                vec![vec![rects[0], rects[4]], vec![rects[1], rects[2]], vec![rects[3]]]
+            );
+        }
+    }
 }

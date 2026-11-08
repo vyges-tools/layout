@@ -50,8 +50,10 @@ fn coloured(mut lib: Library) -> (Library, usize) {
 }
 
 /// The netlist as LVS compares it: ports, then the devices as a sorted list, each keyed by model,
-/// gate, bulk and its {source, drain} pair unordered. (The extractor's device order and
-/// source/drain order are not stable from run to run; neither is part of the circuit.)
+/// gate, bulk and its {source, drain} pair unordered. Two DIFFERENT layouts of one circuit (here:
+/// metal split across datatypes) feed the extractor shapes in a different order, so their device
+/// order and source/drain order differ; neither is part of the circuit. (One layout always gives
+/// the same text: `tests/determinism.rs`.)
 fn key(n: &Netlist) -> String {
     let mut devs: Vec<(String, String, String, [String; 2])> = n
         .devices
