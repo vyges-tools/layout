@@ -44,6 +44,11 @@ pub struct Rules {
     // cell-name substrings whose instances are physical-only (fill/decap/tap/diode)
     // and carry no logical devices — dropped before extraction so LVS ignores them.
     pub ignore_cells: Vec<String>,
+    // `alias: <from L/D> <to L/D>` — shapes and labels on `from` are read as `to` before
+    // extraction. A multi-patterned metal drawn on one datatype per mask is ONE conductor:
+    // alias each mask datatype to the layer's plain one, or abutting shapes of different
+    // masks would trace as different nets.
+    pub alias: Vec<(Ld, Ld)>,
 }
 
 fn parse_ld(s: &str) -> Result<Ld, String> {
@@ -60,6 +65,7 @@ impl Rules {
         let mut contacts = Vec::new();
         let mut nfet_variants = Vec::new();
         let mut pfet_variants = Vec::new();
+        let mut alias = Vec::new();
         for line in text.lines() {
             let l = line.split('#').next().unwrap_or("").trim();
             if let Some((k, v)) = l.split_once(':') {
@@ -71,6 +77,8 @@ impl Rules {
                     }
                     "nfet_variant" if t.len() == 2 => nfet_variants.push((parse_ld(t[0])?, t[1].to_string())),
                     "pfet_variant" if t.len() == 2 => pfet_variants.push((parse_ld(t[0])?, t[1].to_string())),
+                    "alias" if t.len() == 2 => alias.push((parse_ld(t[0])?, parse_ld(t[1])?)),
+                    "alias" => return Err(format!("alias takes <from L/D> <to L/D>, got {:?}", v.trim())),
                     _ => {
                         kv.insert(key, v.trim().to_string());
                     }
@@ -95,6 +103,7 @@ impl Rules {
                 .get("ignore")
                 .map(|v| v.replace(',', " ").split_whitespace().map(|s| s.to_string()).collect())
                 .unwrap_or_default(),
+            alias,
         })
     }
     pub fn load(path: &str) -> Result<Rules, String> {
@@ -113,6 +122,29 @@ enum Role {
 struct Prim {
     rects: Vec<Rect>, // the shape geometry (tiled) — for TRUE overlap, not a bbox
     role: Role,
+}
+
+/// Where an alias moves `ld` (the first alias naming it wins; applied once, never chained).
+fn aliased(alias: &[(Ld, Ld)], ld: Ld) -> Ld {
+    alias.iter().find(|(f, _)| *f == ld).map_or(ld, |(_, t)| *t)
+}
+
+/// The cell with every shape on an aliased layer/datatype moved to its target.
+fn apply_alias(cell: &Cell, alias: &[(Ld, Ld)]) -> Cell {
+    let to = |ld: Ld| aliased(alias, ld);
+    let mut c = cell.clone();
+    for el in &mut c.elements {
+        match el {
+            Element::Boundary { layer, datatype, .. }
+            | Element::Path { layer, datatype, .. }
+            | Element::Box { layer, boxtype: datatype, .. } => {
+                (*layer, *datatype) = to((*layer, *datatype));
+            }
+            // labels are read from the original top cell, through `aliased`, not from here
+            Element::Text { .. } | Element::Sref { .. } | Element::Aref { .. } => {}
+        }
+    }
+    c
 }
 
 fn polys_on(cell: &Cell, ld: Ld) -> Vec<Vec<(i32, i32)>> {
@@ -194,6 +226,8 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
     };
     let flat = if has_refs { Some(crate::flatten::flatten(lib, &base.name)?) } else { None };
     let cell: &Cell = flat.as_ref().unwrap_or(base);
+    let aliased_cell = (!rules.alias.is_empty()).then(|| apply_alias(cell, &rules.alias));
+    let cell: &Cell = aliased_cell.as_ref().unwrap_or(cell);
 
     let dbg = std::env::var("VLVS_DEBUG").is_ok();
     let t0 = std::time::Instant::now();
@@ -237,8 +271,10 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
         .elements
         .iter()
         .filter_map(|el| match el {
-            Element::Text { layer, texttype, x, y, string } if rules.label.contains(&(*layer, *texttype)) => {
-                Some((string.clone(), *layer, *x, *y))
+            Element::Text { layer, texttype, x, y, string } => {
+                // the original cell's labels, read through the alias like every other shape
+                let (layer, texttype) = aliased(&rules.alias, (*layer, *texttype));
+                rules.label.contains(&(layer, texttype)).then(|| (string.clone(), layer, *x, *y))
             }
             _ => None,
         })
