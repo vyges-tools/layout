@@ -1,7 +1,5 @@
 # vyges-layout
 
-**[Download Loom](https://vyges.com/products/vyges-cli/#install)** · install the free [Vyges CLI](https://vyges.com/products/vyges-cli/), then `vyges install loom`
-
 A memory-safe Rust **layout geometry kernel**: read/write **GDSII** and **OASIS**, do
 **polygon boolean** operations, and **flatten** a cell hierarchy — the substrate the
 other layout-side tools ride on.
