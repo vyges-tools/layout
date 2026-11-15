@@ -87,6 +87,12 @@ fn parse_ld(s: &str) -> Option<(i16, i16)> {
     Some((l.trim().parse().ok()?, d.trim().parse().ok()?))
 }
 
+/// The binary allocates through mimalloc, as the reference allocates through the tcmalloc its
+/// Bazel build links (`malloc = @tcmalloc`); see Cargo.toml for the pin.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = parse_cli(&args);
